@@ -1,0 +1,121 @@
+name: Build Windows
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  BUILD_TYPE: Release
+
+jobs:
+  build-windows-cross:
+    name: Cross-compile for Windows (MinGW)
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    
+    - name: Install MinGW-w64 toolchain
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y mingw-w64 cmake ninja-build
+    
+    - name: Configure CMake (Cross-compile)
+      run: |
+        cmake -B build-windows \
+          -G Ninja \
+          -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+          -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64-x86_64.cmake \
+          -DBUILD_TESTS=OFF \
+          -DBUILD_BENCHMARKS=OFF \
+          -DENABLE_ASM=OFF
+    
+    - name: Build
+      run: cmake --build build-windows --config ${{ env.BUILD_TYPE }} -- -k 0
+    
+    - name: Package artifact
+      run: |
+        mkdir -p artifact
+        cp build-windows/code_editor.exe artifact/ 2>/dev/null || true
+        cp build-windows/CodeEditor.exe artifact/ 2>/dev/null || true
+        cp -r assets artifact/ 2>/dev/null || true
+        # Copy MinGW runtime DLLs
+        cp /usr/lib/gcc/x86_64-w64-mingw32/*/libgcc_s_seh-1.dll artifact/ 2>/dev/null || true
+        cp /usr/lib/gcc/x86_64-w64-mingw32/*/libstdc++-6.dll artifact/ 2>/dev/null || true
+        cp /usr/x86_64-w64-mingw32/lib/libwinpthread-1.dll artifact/ 2>/dev/null || true
+    
+    - name: Upload Windows artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: CodeEditor-Windows-x64
+        path: artifact/
+        retention-days: 30
+
+  build-native-linux:
+    name: Build and Test (Linux)
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake ninja-build libgl1-mesa-dev libglfw3-dev \
+          libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev \
+          nasm
+    
+    - name: Configure CMake (Linux native)
+      run: |
+        cmake -B build-linux \
+          -G Ninja \
+          -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+          -DBUILD_TESTS=ON \
+          -DBUILD_BENCHMARKS=OFF \
+          -DCI_BUILD=ON
+    
+    - name: Build
+      run: cmake --build build-linux --config ${{ env.BUILD_TYPE }}
+    
+    - name: Run tests
+      working-directory: build-linux
+      run: ctest -C ${{ env.BUILD_TYPE }} --output-on-failure --verbose
+
+  build-macos:
+    name: Build (macOS)
+    runs-on: macos-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    
+    - name: Install dependencies
+      run: |
+        brew install cmake ninja nasm
+    
+    - name: Configure CMake
+      run: |
+        cmake -B build-macos \
+          -G Ninja \
+          -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+          -DBUILD_TESTS=ON \
+          -DBUILD_BENCHMARKS=OFF \
+          -DCI_BUILD=ON
+    
+    - name: Build
+      run: cmake --build build-macos --config ${{ env.BUILD_TYPE }}
+    
+    - name: Run tests
+      working-directory: build-macos
+      run: ctest -C ${{ env.BUILD_TYPE }} --output-on-failure --verbose
