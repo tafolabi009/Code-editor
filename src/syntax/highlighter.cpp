@@ -69,7 +69,7 @@ std::vector<TokenizedLine> Highlighter::highlightText(std::string_view text) {
     bool inMultiLine = false;
     TokenType multiLineType = TokenType::Normal;
     
-    std::istringstream stream(std::string(text));
+    std::istringstream stream{std::string{text}};
     std::string line;
     size_t lineIndex = 0;
     

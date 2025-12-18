@@ -4,6 +4,7 @@
  */
 
 #include "editor/clipboard.hpp"
+#include <algorithm>
 
 #ifdef _WIN32
 #include <windows.h>

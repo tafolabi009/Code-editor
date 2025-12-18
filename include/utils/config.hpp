@@ -6,6 +6,7 @@
 #include <variant>
 #include <optional>
 #include <filesystem>
+#include <nlohmann/json_fwd.hpp>
 
 namespace utils {
 
@@ -76,6 +77,7 @@ private:
     bool m_modified = false;
     
     void parseJson(const std::string& json);
+    void parseJsonValue(const nlohmann::json& j, const std::string& prefix);
     std::string toJson() const;
 };
 

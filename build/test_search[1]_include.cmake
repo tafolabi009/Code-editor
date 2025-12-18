@@ -1,0 +1,5 @@
+if(EXISTS "/workspaces/Code-editor/build/test_search[1]_tests.cmake")
+  include("/workspaces/Code-editor/build/test_search[1]_tests.cmake")
+else()
+  add_test(test_search_NOT_BUILT test_search_NOT_BUILT)
+endif()

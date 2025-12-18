@@ -1,0 +1,5 @@
+if(EXISTS "/workspaces/Code-editor/build/test_text_buffer[1]_tests.cmake")
+  include("/workspaces/Code-editor/build/test_text_buffer[1]_tests.cmake")
+else()
+  add_test(test_text_buffer_NOT_BUILT test_text_buffer_NOT_BUILT)
+endif()

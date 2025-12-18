@@ -6,107 +6,32 @@
 #include "utils/config.hpp"
 #include <fstream>
 #include <sstream>
-#include <filesystem>
+#include <nlohmann/json.hpp>
 #include <algorithm>
 
-#ifdef HAS_JSON
-#include <nlohmann/json.hpp>
 using json = nlohmann::json;
-#endif
 
 namespace utils {
 
 // ============================================================================
-// Configuration Implementation
+// Config Implementation
 // ============================================================================
 
-Configuration::Configuration() {
+Config::Config() {
     setDefaults();
 }
 
-Configuration::Configuration(const std::string& filePath) : m_filePath(filePath) {
+Config::Config(const std::string& path) : m_path(path) {
     setDefaults();
-    load(filePath);
+    load(path);
 }
 
-Configuration::~Configuration() {
-    if (m_autoSave && m_dirty) {
-        save();
-    }
-}
+Config::~Config() = default;
 
-void Configuration::setDefaults() {
-    // Editor settings
-    m_values["editor.tabSize"] = "4";
-    m_values["editor.useSpaces"] = "true";
-    m_values["editor.autoIndent"] = "true";
-    m_values["editor.wordWrap"] = "false";
-    m_values["editor.wrapColumn"] = "80";
-    m_values["editor.showLineNumbers"] = "true";
-    m_values["editor.showWhitespace"] = "false";
-    m_values["editor.highlightCurrentLine"] = "true";
-    m_values["editor.scrollPastEnd"] = "true";
-    m_values["editor.smoothScrolling"] = "true";
-    m_values["editor.cursorBlinkRate"] = "530";
-    m_values["editor.cursorStyle"] = "line";
+bool Config::load(const std::string& path) {
+    m_path = path;
     
-    // Font settings
-    m_values["font.family"] = "JetBrains Mono";
-    m_values["font.size"] = "14";
-    m_values["font.lineHeight"] = "1.5";
-    
-    // Theme settings
-    m_values["theme.name"] = "dark";
-    m_values["theme.background"] = "#1e1e1e";
-    m_values["theme.foreground"] = "#d4d4d4";
-    m_values["theme.selection"] = "#264f78";
-    m_values["theme.cursor"] = "#ffffff";
-    m_values["theme.lineNumber"] = "#858585";
-    m_values["theme.currentLine"] = "#2a2a2a";
-    
-    // Syntax colors
-    m_values["syntax.keyword"] = "#569cd6";
-    m_values["syntax.string"] = "#ce9178";
-    m_values["syntax.number"] = "#b5cea8";
-    m_values["syntax.comment"] = "#6a9955";
-    m_values["syntax.type"] = "#4ec9b0";
-    m_values["syntax.function"] = "#dcdcaa";
-    m_values["syntax.operator"] = "#d4d4d4";
-    m_values["syntax.preprocessor"] = "#c586c0";
-    
-    // File settings
-    m_values["file.encoding"] = "UTF-8";
-    m_values["file.lineEnding"] = "LF";
-    m_values["file.trimTrailingWhitespace"] = "true";
-    m_values["file.insertFinalNewline"] = "true";
-    m_values["file.autoSave"] = "false";
-    m_values["file.autoSaveDelay"] = "1000";
-    
-    // Search settings
-    m_values["search.caseSensitive"] = "false";
-    m_values["search.wholeWord"] = "false";
-    m_values["search.useRegex"] = "false";
-    m_values["search.highlightMatches"] = "true";
-    
-    // Window settings
-    m_values["window.width"] = "1280";
-    m_values["window.height"] = "720";
-    m_values["window.maximized"] = "false";
-    m_values["window.showTabBar"] = "true";
-    m_values["window.showStatusBar"] = "true";
-    m_values["window.showMinimap"] = "false";
-    
-    // Performance settings
-    m_values["performance.maxFileSize"] = "50";  // MB
-    m_values["performance.useSIMD"] = "true";
-    m_values["performance.syntaxHighlightingDelay"] = "50";
-    m_values["performance.maxUndoHistory"] = "1000";
-}
-
-bool Configuration::load(const std::string& filePath) {
-    m_filePath = filePath;
-    
-    std::ifstream file(filePath);
+    std::ifstream file(path);
     if (!file.is_open()) {
         return false;
     }
@@ -115,74 +40,161 @@ bool Configuration::load(const std::string& filePath) {
                         std::istreambuf_iterator<char>());
     file.close();
     
-    return parse(content);
+    parseJson(content);
+    m_modified = false;
+    return true;
 }
 
-bool Configuration::save() const {
-    return save(m_filePath);
-}
-
-bool Configuration::save(const std::string& filePath) const {
+bool Config::save(const std::string& path) const {
     // Create directory if it doesn't exist
-    std::filesystem::path path(filePath);
-    if (path.has_parent_path()) {
-        std::filesystem::create_directories(path.parent_path());
+    std::filesystem::path p(path);
+    if (p.has_parent_path()) {
+        std::filesystem::create_directories(p.parent_path());
     }
     
-    std::ofstream file(filePath);
+    std::ofstream file(path);
     if (!file.is_open()) {
         return false;
     }
     
-    file << serialize();
-    file.close();
-    
-    return true;
+    file << toJson();
+    return file.good();
 }
 
-bool Configuration::parse(const std::string& content) {
-#ifdef HAS_JSON
-    try {
-        json j = json::parse(content);
-        parseJsonObject(j, "");
-        m_dirty = false;
-        return true;
-    } catch (const json::exception&) {
+bool Config::save() const {
+    if (m_path.empty()) {
         return false;
     }
-#else
-    // Simple key=value parsing fallback
-    std::istringstream stream(content);
-    std::string line;
-    
-    while (std::getline(stream, line)) {
-        // Skip empty lines and comments
-        if (line.empty() || line[0] == '#' || line[0] == ';') {
-            continue;
-        }
-        
-        size_t pos = line.find('=');
-        if (pos != std::string::npos) {
-            std::string key = line.substr(0, pos);
-            std::string value = line.substr(pos + 1);
-            
-            // Trim whitespace
-            key.erase(0, key.find_first_not_of(" \t"));
-            key.erase(key.find_last_not_of(" \t") + 1);
-            value.erase(0, value.find_first_not_of(" \t\""));
-            value.erase(value.find_last_not_of(" \t\"") + 1);
-            
-            m_values[key] = value;
-        }
+    return save(m_path);
+}
+
+std::optional<ConfigValue> Config::get(const std::string& key) const {
+    auto it = m_values.find(key);
+    if (it != m_values.end()) {
+        return it->second;
     }
+    return std::nullopt;
+}
+
+bool Config::has(const std::string& key) const {
+    return m_values.find(key) != m_values.end();
+}
+
+void Config::remove(const std::string& key) {
+    m_values.erase(key);
+    m_modified = true;
+}
+
+void Config::clear() {
+    m_values.clear();
+    m_modified = true;
+}
+
+void Config::setDefaults() {
+    // Editor settings
+    set(ConfigKeys::TAB_WIDTH, 4);
+    set(ConfigKeys::INSERT_SPACES, true);
+    set(ConfigKeys::LINE_NUMBERS, true);
+    set(ConfigKeys::RELATIVE_LINE_NUMBERS, false);
+    set(ConfigKeys::WORD_WRAP, false);
+    set(ConfigKeys::AUTO_INDENT, true);
+    set(ConfigKeys::HIGHLIGHT_CURRENT_LINE, true);
+    set(ConfigKeys::SHOW_WHITESPACE, false);
+    set(ConfigKeys::MINIMAP, false);
+    set(ConfigKeys::SCROLL_SPEED, 3.0);
+    set(ConfigKeys::FONT_SIZE, 14);
+    set(ConfigKeys::FONT_FAMILY, std::string("JetBrains Mono"));
     
-    m_dirty = false;
-    return true;
+    // Theme
+    set(ConfigKeys::THEME, std::string("dark"));
+    set(ConfigKeys::THEME_BACKGROUND, std::string("#1e1e1e"));
+    set(ConfigKeys::THEME_FOREGROUND, std::string("#d4d4d4"));
+    set(ConfigKeys::THEME_SELECTION, std::string("#264f78"));
+    set(ConfigKeys::THEME_CURSOR, std::string("#ffffff"));
+    
+    // Files
+    set(ConfigKeys::AUTO_SAVE, false);
+    set(ConfigKeys::AUTO_SAVE_DELAY, 1000);
+    set(ConfigKeys::DEFAULT_ENCODING, std::string("UTF-8"));
+    set(ConfigKeys::DEFAULT_LINE_ENDING, std::string("LF"));
+    set(ConfigKeys::TRIM_TRAILING_WHITESPACE, true);
+    set(ConfigKeys::INSERT_FINAL_NEWLINE, true);
+    
+    // Window
+    set(ConfigKeys::WINDOW_WIDTH, 1280);
+    set(ConfigKeys::WINDOW_HEIGHT, 720);
+    set(ConfigKeys::WINDOW_MAXIMIZED, false);
+    
+    m_modified = false;
+}
+
+void Config::resetToDefaults() {
+    clear();
+    setDefaults();
+}
+
+std::vector<std::string> Config::keys() const {
+    std::vector<std::string> result;
+    result.reserve(m_values.size());
+    for (const auto& [key, value] : m_values) {
+        result.push_back(key);
+    }
+    return result;
+}
+
+std::string Config::getDefaultConfigPath() {
+    // Get user config directory
+#ifdef _WIN32
+    const char* appdata = std::getenv("APPDATA");
+    if (appdata) {
+        return std::string(appdata) + "/CodeEditor/config.json";
+    }
+    return "config.json";
+#else
+    const char* home = std::getenv("HOME");
+    if (home) {
+        return std::string(home) + "/.config/code-editor/config.json";
+    }
+    return "config.json";
 #endif
 }
 
-std::string Configuration::serialize() const {
-#ifdef HAS_JSON
+void Config::parseJson(const std::string& jsonStr) {
+    try {
+        json j = json::parse(jsonStr);
+        parseJsonValue(j, "");
+    } catch (const json::exception& e) {
+        // Invalid JSON, keep defaults
+    }
+}
+
+void Config::parseJsonValue(const json& j, const std::string& prefix) {
+    for (auto& [key, value] : j.items()) {
+        std::string fullKey = prefix.empty() ? key : prefix + "." + key;
+        
+        if (value.is_object()) {
+            parseJsonValue(value, fullKey);
+        } else if (value.is_boolean()) {
+            set(fullKey, value.get<bool>());
+        } else if (value.is_number_integer()) {
+            set(fullKey, value.get<int>());
+        } else if (value.is_number_float()) {
+            set(fullKey, value.get<double>());
+        } else if (value.is_string()) {
+            set(fullKey, value.get<std::string>());
+        } else if (value.is_array()) {
+            std::vector<std::string> arr;
+            for (const auto& item : value) {
+                if (item.is_string()) {
+                    arr.push_back(item.get<std::string>());
+                }
+            }
+            set(fullKey, arr);
+        }
+    }
+}
+
+std::string Config::toJson() const {
     json j;
     
     for (const auto& [key, value] : m_values) {
@@ -200,281 +212,171 @@ std::string Configuration::serialize() const {
             current = &(*current)[parts[i]];
         }
         
-        // Try to convert to appropriate type
-        if (value == "true") {
-            (*current)[parts.back()] = true;
-        } else if (value == "false") {
-            (*current)[parts.back()] = false;
-        } else {
-            try {
-                if (value.find('.') != std::string::npos) {
-                    (*current)[parts.back()] = std::stod(value);
-                } else {
-                    (*current)[parts.back()] = std::stoll(value);
-                }
-            } catch (...) {
-                (*current)[parts.back()] = value;
+        // Set the value based on variant type
+        std::visit([&](auto&& arg) {
+            using T = std::decay_t<decltype(arg)>;
+            if constexpr (std::is_same_v<T, bool>) {
+                (*current)[parts.back()] = arg;
+            } else if constexpr (std::is_same_v<T, int>) {
+                (*current)[parts.back()] = arg;
+            } else if constexpr (std::is_same_v<T, double>) {
+                (*current)[parts.back()] = arg;
+            } else if constexpr (std::is_same_v<T, std::string>) {
+                (*current)[parts.back()] = arg;
+            } else if constexpr (std::is_same_v<T, std::vector<std::string>>) {
+                (*current)[parts.back()] = arg;
             }
-        }
+        }, value);
     }
     
     return j.dump(2);
-#else
-    std::ostringstream output;
-    
-    // Group by prefix
-    std::map<std::string, std::vector<std::pair<std::string, std::string>>> groups;
-    
-    for (const auto& [key, value] : m_values) {
-        size_t pos = key.find('.');
-        if (pos != std::string::npos) {
-            std::string prefix = key.substr(0, pos);
-            groups[prefix].emplace_back(key, value);
-        } else {
-            groups[""].emplace_back(key, value);
-        }
-    }
-    
-    for (const auto& [prefix, values] : groups) {
-        if (!prefix.empty()) {
-            output << "\n# " << prefix << " settings\n";
-        }
-        for (const auto& [key, value] : values) {
-            output << key << " = " << value << "\n";
-        }
-    }
-    
-    return output.str();
-#endif
 }
 
-#ifdef HAS_JSON
-void Configuration::parseJsonObject(const json& j, const std::string& prefix) {
-    for (auto& [key, value] : j.items()) {
-        std::string fullKey = prefix.empty() ? key : prefix + "." + key;
+// ============================================================================
+// KeyBindings Implementation
+// ============================================================================
+
+KeyBindings::KeyBindings() {
+    setDefaults();
+}
+
+KeyBindings::~KeyBindings() = default;
+
+bool KeyBindings::load(const std::string& path) {
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        return false;
+    }
+    
+    try {
+        json j;
+        file >> j;
         
-        if (value.is_object()) {
-            parseJsonObject(value, fullKey);
-        } else if (value.is_boolean()) {
-            m_values[fullKey] = value.get<bool>() ? "true" : "false";
-        } else if (value.is_number_integer()) {
-            m_values[fullKey] = std::to_string(value.get<int64_t>());
-        } else if (value.is_number_float()) {
-            m_values[fullKey] = std::to_string(value.get<double>());
-        } else if (value.is_string()) {
-            m_values[fullKey] = value.get<std::string>();
+        m_bindings.clear();
+        for (const auto& item : j["keybindings"]) {
+            KeyBinding binding;
+            binding.key = item["key"].get<int>();
+            binding.modifiers = item["modifiers"].get<int>();
+            binding.action = item["action"].get<std::string>();
+            binding.description = item.value("description", "");
+            m_bindings.push_back(binding);
+        }
+        return true;
+    } catch (const json::exception&) {
+        return false;
+    }
+}
+
+bool KeyBindings::save(const std::string& path) const {
+    json j;
+    j["keybindings"] = json::array();
+    
+    for (const auto& binding : m_bindings) {
+        json item;
+        item["key"] = binding.key;
+        item["modifiers"] = binding.modifiers;
+        item["action"] = binding.action;
+        item["description"] = binding.description;
+        j["keybindings"].push_back(item);
+    }
+    
+    std::ofstream file(path);
+    if (!file.is_open()) {
+        return false;
+    }
+    
+    file << j.dump(2);
+    return file.good();
+}
+
+void KeyBindings::bind(const std::string& action, int key, int modifiers) {
+    // Remove existing binding for this action
+    unbind(action);
+    
+    KeyBinding binding;
+    binding.key = key;
+    binding.modifiers = modifiers;
+    binding.action = action;
+    m_bindings.push_back(binding);
+}
+
+void KeyBindings::unbind(const std::string& action) {
+    m_bindings.erase(
+        std::remove_if(m_bindings.begin(), m_bindings.end(),
+                      [&action](const KeyBinding& b) { return b.action == action; }),
+        m_bindings.end()
+    );
+}
+
+std::optional<std::string> KeyBindings::getAction(int key, int modifiers) const {
+    for (const auto& binding : m_bindings) {
+        if (binding.key == key && binding.modifiers == modifiers) {
+            return binding.action;
         }
     }
-}
-#endif
-
-std::string Configuration::getString(const std::string& key, const std::string& defaultValue) const {
-    auto it = m_values.find(key);
-    return it != m_values.end() ? it->second : defaultValue;
+    return std::nullopt;
 }
 
-int Configuration::getInt(const std::string& key, int defaultValue) const {
-    auto it = m_values.find(key);
-    if (it != m_values.end()) {
-        try {
-            return std::stoi(it->second);
-        } catch (...) {}
+std::optional<KeyBinding> KeyBindings::getBinding(const std::string& action) const {
+    for (const auto& binding : m_bindings) {
+        if (binding.action == action) {
+            return binding;
+        }
     }
-    return defaultValue;
+    return std::nullopt;
 }
 
-float Configuration::getFloat(const std::string& key, float defaultValue) const {
-    auto it = m_values.find(key);
-    if (it != m_values.end()) {
-        try {
-            return std::stof(it->second);
-        } catch (...) {}
+void KeyBindings::setDefaults() {
+    m_bindings.clear();
+    
+    // File operations
+    addDefault("file.new", 'N', 2, "New File");              // Ctrl+N
+    addDefault("file.open", 'O', 2, "Open File");            // Ctrl+O
+    addDefault("file.save", 'S', 2, "Save File");            // Ctrl+S
+    addDefault("file.saveAs", 'S', 3, "Save As");            // Ctrl+Shift+S
+    addDefault("file.close", 'W', 2, "Close File");          // Ctrl+W
+    
+    // Edit operations
+    addDefault("edit.undo", 'Z', 2, "Undo");                  // Ctrl+Z
+    addDefault("edit.redo", 'Y', 2, "Redo");                  // Ctrl+Y
+    addDefault("edit.cut", 'X', 2, "Cut");                    // Ctrl+X
+    addDefault("edit.copy", 'C', 2, "Copy");                  // Ctrl+C
+    addDefault("edit.paste", 'V', 2, "Paste");                // Ctrl+V
+    addDefault("edit.selectAll", 'A', 2, "Select All");       // Ctrl+A
+    addDefault("edit.find", 'F', 2, "Find");                  // Ctrl+F
+    addDefault("edit.replace", 'H', 2, "Replace");            // Ctrl+H
+    addDefault("edit.goToLine", 'G', 2, "Go to Line");        // Ctrl+G
+}
+
+void KeyBindings::resetToDefaults() {
+    setDefaults();
+}
+
+std::string KeyBindings::keyToString(int key, int modifiers) {
+    std::string result;
+    
+    if (modifiers & 2) result += "Ctrl+";
+    if (modifiers & 1) result += "Shift+";
+    if (modifiers & 4) result += "Alt+";
+    if (modifiers & 8) result += "Super+";
+    
+    if (key >= 'A' && key <= 'Z') {
+        result += static_cast<char>(key);
+    } else {
+        result += std::to_string(key);
     }
-    return defaultValue;
-}
-
-bool Configuration::getBool(const std::string& key, bool defaultValue) const {
-    auto it = m_values.find(key);
-    if (it != m_values.end()) {
-        return it->second == "true" || it->second == "1" || it->second == "yes";
-    }
-    return defaultValue;
-}
-
-void Configuration::set(const std::string& key, const std::string& value) {
-    m_values[key] = value;
-    m_dirty = true;
-    notifyObservers(key);
-}
-
-void Configuration::set(const std::string& key, int value) {
-    set(key, std::to_string(value));
-}
-
-void Configuration::set(const std::string& key, float value) {
-    set(key, std::to_string(value));
-}
-
-void Configuration::set(const std::string& key, bool value) {
-    set(key, value ? std::string("true") : std::string("false"));
-}
-
-bool Configuration::has(const std::string& key) const {
-    return m_values.find(key) != m_values.end();
-}
-
-void Configuration::remove(const std::string& key) {
-    m_values.erase(key);
-    m_dirty = true;
-}
-
-std::vector<std::string> Configuration::keys() const {
-    std::vector<std::string> result;
-    result.reserve(m_values.size());
-    for (const auto& [key, value] : m_values) {
-        result.push_back(key);
-    }
+    
     return result;
 }
 
-std::vector<std::string> Configuration::keysWithPrefix(const std::string& prefix) const {
-    std::vector<std::string> result;
-    for (const auto& [key, value] : m_values) {
-        if (key.compare(0, prefix.size(), prefix) == 0) {
-            result.push_back(key);
-        }
-    }
-    return result;
-}
-
-void Configuration::addObserver(const std::string& key, ConfigObserver observer) {
-    m_observers[key].push_back(std::move(observer));
-}
-
-void Configuration::notifyObservers(const std::string& key) {
-    // Notify exact key observers
-    auto it = m_observers.find(key);
-    if (it != m_observers.end()) {
-        for (const auto& observer : it->second) {
-            observer(key);
-        }
-    }
-    
-    // Notify prefix observers (e.g., "editor.*")
-    for (const auto& [pattern, observers] : m_observers) {
-        if (pattern.back() == '*') {
-            std::string prefix = pattern.substr(0, pattern.size() - 1);
-            if (key.compare(0, prefix.size(), prefix) == 0) {
-                for (const auto& observer : observers) {
-                    observer(key);
-                }
-            }
-        }
-    }
-}
-
-// ============================================================================
-// ConfigManager Implementation
-// ============================================================================
-
-ConfigManager& ConfigManager::instance() {
-    static ConfigManager instance;
-    return instance;
-}
-
-ConfigManager::ConfigManager() {
-    // Load default config
-    m_configs["default"] = std::make_shared<Configuration>();
-}
-
-bool ConfigManager::loadUserConfig(const std::string& path) {
-    auto config = std::make_shared<Configuration>(path);
-    m_configs["user"] = config;
-    m_userConfigPath = path;
-    return true;  // Even if file doesn't exist, we create with defaults
-}
-
-bool ConfigManager::loadWorkspaceConfig(const std::string& path) {
-    auto config = std::make_shared<Configuration>(path);
-    m_configs["workspace"] = config;
-    return true;
-}
-
-bool ConfigManager::saveUserConfig() {
-    auto it = m_configs.find("user");
-    if (it != m_configs.end() && !m_userConfigPath.empty()) {
-        return it->second->save(m_userConfigPath);
-    }
-    return false;
-}
-
-std::string ConfigManager::getString(const std::string& key, const std::string& defaultValue) const {
-    // Check workspace config first
-    auto workspace = m_configs.find("workspace");
-    if (workspace != m_configs.end() && workspace->second->has(key)) {
-        return workspace->second->getString(key, defaultValue);
-    }
-    
-    // Then user config
-    auto user = m_configs.find("user");
-    if (user != m_configs.end() && user->second->has(key)) {
-        return user->second->getString(key, defaultValue);
-    }
-    
-    // Finally default config
-    auto def = m_configs.find("default");
-    if (def != m_configs.end()) {
-        return def->second->getString(key, defaultValue);
-    }
-    
-    return defaultValue;
-}
-
-int ConfigManager::getInt(const std::string& key, int defaultValue) const {
-    auto workspace = m_configs.find("workspace");
-    if (workspace != m_configs.end() && workspace->second->has(key)) {
-        return workspace->second->getInt(key, defaultValue);
-    }
-    
-    auto user = m_configs.find("user");
-    if (user != m_configs.end() && user->second->has(key)) {
-        return user->second->getInt(key, defaultValue);
-    }
-    
-    auto def = m_configs.find("default");
-    if (def != m_configs.end()) {
-        return def->second->getInt(key, defaultValue);
-    }
-    
-    return defaultValue;
-}
-
-bool ConfigManager::getBool(const std::string& key, bool defaultValue) const {
-    auto workspace = m_configs.find("workspace");
-    if (workspace != m_configs.end() && workspace->second->has(key)) {
-        return workspace->second->getBool(key, defaultValue);
-    }
-    
-    auto user = m_configs.find("user");
-    if (user != m_configs.end() && user->second->has(key)) {
-        return user->second->getBool(key, defaultValue);
-    }
-    
-    auto def = m_configs.find("default");
-    if (def != m_configs.end()) {
-        return def->second->getBool(key, defaultValue);
-    }
-    
-    return defaultValue;
-}
-
-void ConfigManager::set(const std::string& key, const std::string& value, ConfigLevel level) {
-    std::string configName = (level == ConfigLevel::User) ? "user" : "workspace";
-    
-    auto it = m_configs.find(configName);
-    if (it != m_configs.end()) {
-        it->second->set(key, value);
-    }
+void KeyBindings::addDefault(const std::string& action, int key, int modifiers,
+                             const std::string& description) {
+    KeyBinding binding;
+    binding.key = key;
+    binding.modifiers = modifiers;
+    binding.action = action;
+    binding.description = description;
+    m_bindings.push_back(binding);
 }
 
 } // namespace utils

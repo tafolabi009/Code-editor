@@ -1,0 +1,14 @@
+# Target labels
+ json-populate
+# Source files and their labels
+/workspaces/Code-editor/build/_deps/json-subbuild/CMakeFiles/json-populate
+/workspaces/Code-editor/build/_deps/json-subbuild/CMakeFiles/json-populate.rule
+/workspaces/Code-editor/build/_deps/json-subbuild/CMakeFiles/json-populate-complete.rule
+/workspaces/Code-editor/build/_deps/json-subbuild/json-populate-prefix/src/json-populate-stamp/json-populate-build.rule
+/workspaces/Code-editor/build/_deps/json-subbuild/json-populate-prefix/src/json-populate-stamp/json-populate-configure.rule
+/workspaces/Code-editor/build/_deps/json-subbuild/json-populate-prefix/src/json-populate-stamp/json-populate-download.rule
+/workspaces/Code-editor/build/_deps/json-subbuild/json-populate-prefix/src/json-populate-stamp/json-populate-install.rule
+/workspaces/Code-editor/build/_deps/json-subbuild/json-populate-prefix/src/json-populate-stamp/json-populate-mkdir.rule
+/workspaces/Code-editor/build/_deps/json-subbuild/json-populate-prefix/src/json-populate-stamp/json-populate-patch.rule
+/workspaces/Code-editor/build/_deps/json-subbuild/json-populate-prefix/src/json-populate-stamp/json-populate-test.rule
+/workspaces/Code-editor/build/_deps/json-subbuild/json-populate-prefix/src/json-populate-stamp/json-populate-update.rule
