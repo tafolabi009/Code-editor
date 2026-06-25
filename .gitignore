@@ -1,0 +1,43 @@
+# Build directories
+build/
+build-*/
+out/
+cmake-build-*/
+
+# CMake artifacts
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+_deps/
+*.cmake.stamp
+
+# Compiled objects / libraries / executables
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+code_editor
+code_editor.exe
+CodeEditor.exe
+
+# Assembler output
+*.lst
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Test / coverage output
+Testing/
+*.gcda
+*.gcno
+coverage/

@@ -98,12 +98,22 @@ public:
     
     // Syntax highlighting
     void setHighlighter(std::shared_ptr<syntax::Highlighter> highlighter);
-    
+    std::shared_ptr<syntax::Highlighter> getHighlighter() const { return m_highlighter; }
+    // Mark the cached highlighting stale so it is rebuilt on the next render.
+    void markHighlightDirty() { m_highlightDirty = true; }
+
+    // File association (one file per pane / tab)
+    const std::string& getFilePath() const { return m_filePath; }
+    void setFilePath(const std::string& path) { m_filePath = path; }
+    std::string getDisplayName() const;
+
 private:
     std::shared_ptr<editor::TextBuffer> m_buffer;
     std::unique_ptr<editor::Cursor> m_cursor;
     std::unique_ptr<editor::Selection> m_selection;
     std::shared_ptr<syntax::Highlighter> m_highlighter;
+    std::string m_filePath;
+    bool m_highlightDirty = false;
     
     float m_scrollX = 0.0f;
     float m_scrollY = 0.0f;
@@ -171,6 +181,9 @@ public:
     
     // Clipboard
     editor::Clipboard& getClipboard() { return m_clipboard; }
+    void copySelection();
+    void cutSelection();
+    void pasteClipboard();
     
     // Editor panes
     EditorPane* getCurrentPane() { return m_currentPane; }
@@ -195,10 +208,7 @@ private:
     
     std::vector<std::unique_ptr<EditorPane>> m_panes;
     EditorPane* m_currentPane = nullptr;
-    
-    // File tracking
-    std::string m_currentFilePath;
-    
+
     // UI state
     bool m_showFindDialog = false;
     bool m_showReplaceDialog = false;

@@ -1,2 +1,0 @@
-/usr/bin/ar qc lib/libeditor_core.a CMakeFiles/editor_core.dir/src/editor/text_buffer.cpp.o CMakeFiles/editor_core.dir/src/editor/cursor.cpp.o CMakeFiles/editor_core.dir/src/editor/selection.cpp.o CMakeFiles/editor_core.dir/src/editor/clipboard.cpp.o CMakeFiles/editor_core.dir/src/syntax/highlighter.cpp.o CMakeFiles/editor_core.dir/src/search/search.cpp.o CMakeFiles/editor_core.dir/src/utils/profiler.cpp.o CMakeFiles/editor_core.dir/src/utils/config.cpp.o CMakeFiles/editor_core.dir/src/utils/file_io.cpp.o
-/usr/bin/ranlib lib/libeditor_core.a

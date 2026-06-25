@@ -48,6 +48,15 @@ void EditorPane::setBuffer(std::shared_ptr<editor::TextBuffer> buffer) {
 
 void EditorPane::setHighlighter(std::shared_ptr<syntax::Highlighter> highlighter) {
     m_highlighter = highlighter;
+    m_highlightDirty = true;  // (re)build the token cache on next render
+}
+
+std::string EditorPane::getDisplayName() const {
+    if (m_filePath.empty()) {
+        return "Untitled";
+    }
+    size_t slash = m_filePath.find_last_of("/\\");
+    return (slash == std::string::npos) ? m_filePath : m_filePath.substr(slash + 1);
 }
 
 void EditorPane::setViewportSize(float width, float height) {
@@ -126,7 +135,6 @@ void EditorPane::render(const EditorTheme& theme, const EditorConfig& config) {
     m_viewportHeight = contentRegion.y;
     
     // Calculate sizes
-    float gutterWidth = config.showLineNumbers ? 60.0f : 0.0f;
     m_lineHeight = config.fontSize * config.lineHeight;
     m_charWidth = config.fontSize * 0.6f;  // Approximate monospace width
     
@@ -190,6 +198,12 @@ void EditorPane::renderGutter(const EditorTheme& theme, const EditorConfig& conf
 }
 
 void EditorPane::renderText(const EditorTheme& theme, const EditorConfig& config) {
+    // Rebuild syntax highlighting if the buffer changed since the last frame.
+    if (m_highlighter && m_highlightDirty) {
+        m_highlighter->highlightText(m_buffer->getText());
+        m_highlightDirty = false;
+    }
+
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     ImVec2 pos = ImGui::GetCursorScreenPos();
     float gutterWidth = config.showLineNumbers ? 60.0f : 10.0f;
@@ -310,7 +324,7 @@ void EditorPane::renderSelection(const EditorTheme& theme) {
     }
 }
 
-void EditorPane::handleKeyInput(int key, int scancode, int action, int mods) {
+void EditorPane::handleKeyInput(int key, [[maybe_unused]] int scancode, int action, int mods) {
     if (action == GLFW_RELEASE) return;
     
     bool ctrl = (mods & GLFW_MOD_CONTROL) != 0;
@@ -432,6 +446,7 @@ void EditorPane::insertChar(char c) {
     auto pos = m_cursor->getPosition();
     m_buffer->insert(pos, std::string_view(&c, 1));
     m_cursor->move(editor::CursorDirection::Right);
+    m_highlightDirty = true;
 }
 
 void EditorPane::insertText(const std::string& text) {
@@ -441,6 +456,7 @@ void EditorPane::insertText(const std::string& text) {
     for (size_t i = 0; i < text.length(); ++i) {
         m_cursor->move(editor::CursorDirection::Right);
     }
+    m_highlightDirty = true;
 }
 
 void EditorPane::deleteSelection() {
@@ -449,6 +465,7 @@ void EditorPane::deleteSelection() {
         m_buffer->remove(range);
         m_cursor->setPosition(range.start);
         m_selection->clearSelection();
+        m_highlightDirty = true;
     }
 }
 
@@ -461,6 +478,7 @@ void EditorPane::handleBackspace() {
             m_cursor->move(editor::CursorDirection::Left);
             auto newPos = m_cursor->getPosition();
             m_buffer->remove(m_buffer->positionToOffset(newPos), 1);
+            m_highlightDirty = true;
         }
     }
 }
@@ -472,6 +490,7 @@ void EditorPane::handleDelete() {
         size_t offset = m_cursor->getOffset();
         if (offset < m_buffer->size()) {
             m_buffer->remove(offset, 1);
+            m_highlightDirty = true;
         }
     }
 }
@@ -551,7 +570,6 @@ void Window::initImGui() {
     
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     
     // Setup Platform/Renderer backends
     ImGui_ImplGlfw_InitForOpenGL(m_window, true);
@@ -627,13 +645,12 @@ void Window::render() {
     // Main menu bar
     renderMenuBar();
     
-    // Create main dockspace
+    // Main editor window fills the primary viewport's work area.
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->WorkPos);
     ImGui::SetNextWindowSize(viewport->WorkSize);
-    ImGui::SetNextWindowViewport(viewport->ID);
-    
-    ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar |
+
+    ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoTitleBar |
                                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
                                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
                                     ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_MenuBar;
@@ -676,17 +693,21 @@ void Window::renderMenuBar() {
         
         if (ImGui::BeginMenu("Edit")) {
             if (ImGui::MenuItem("Undo", "Ctrl+Z")) {
-                if (m_currentPane && m_currentPane->getBuffer()->canUndo())
+                if (m_currentPane && m_currentPane->getBuffer()->canUndo()) {
                     m_currentPane->getBuffer()->undo();
+                    m_currentPane->markHighlightDirty();
+                }
             }
             if (ImGui::MenuItem("Redo", "Ctrl+Y")) {
-                if (m_currentPane && m_currentPane->getBuffer()->canRedo())
+                if (m_currentPane && m_currentPane->getBuffer()->canRedo()) {
                     m_currentPane->getBuffer()->redo();
+                    m_currentPane->markHighlightDirty();
+                }
             }
             ImGui::Separator();
-            if (ImGui::MenuItem("Cut", "Ctrl+X")) {}
-            if (ImGui::MenuItem("Copy", "Ctrl+C")) {}
-            if (ImGui::MenuItem("Paste", "Ctrl+V")) {}
+            if (ImGui::MenuItem("Cut", "Ctrl+X")) cutSelection();
+            if (ImGui::MenuItem("Copy", "Ctrl+C")) copySelection();
+            if (ImGui::MenuItem("Paste", "Ctrl+V")) pasteClipboard();
             ImGui::Separator();
             if (ImGui::MenuItem("Find...", "Ctrl+F")) showFindDialog();
             if (ImGui::MenuItem("Replace...", "Ctrl+H")) showReplaceDialog();
@@ -715,26 +736,33 @@ void Window::renderTabs() {
     if (ImGui::BeginTabBar("FileTabs", ImGuiTabBarFlags_Reorderable | 
                                         ImGuiTabBarFlags_AutoSelectNewTabs |
                                         ImGuiTabBarFlags_FittingPolicyScroll)) {
+        EditorPane* paneToClose = nullptr;
         for (size_t i = 0; i < m_panes.size(); ++i) {
             auto& pane = m_panes[i];
-            std::string name = m_currentFilePath.empty() ? "Untitled" : 
-                              m_currentFilePath.substr(m_currentFilePath.find_last_of("/\\") + 1);
-            
+            std::string name = pane->getDisplayName();
             if (pane->getBuffer()->isModified()) {
                 name += " *";
             }
-            
+            // Per-pane ImGui id so tabs with the same filename stay distinct.
+            std::string label = name + "###pane" + std::to_string(i);
+
             bool open = true;
-            if (ImGui::BeginTabItem(name.c_str(), &open)) {
+            if (ImGui::BeginTabItem(label.c_str(), &open)) {
                 m_currentPane = pane.get();
                 ImGui::EndTabItem();
             }
-            
+
             if (!open) {
-                closeCurrentFile();
+                paneToClose = pane.get();
             }
         }
         ImGui::EndTabBar();
+
+        // Handle close after iteration so we don't mutate m_panes mid-loop.
+        if (paneToClose) {
+            m_currentPane = paneToClose;
+            closeCurrentFile();
+        }
     }
 }
 
@@ -748,7 +776,7 @@ void Window::renderStatusBar() {
     
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
-                            ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking;
+                            ImGuiWindowFlags_NoSavedSettings;
     
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 2));
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f, 0.08f, 0.08f, 1.0f));
@@ -858,8 +886,7 @@ void Window::renderDialogs() {
                 if (selection.hasSelection()) {
                     auto range = selection.getNormalizedRange();
                     size_t startOffset = m_currentPane->getBuffer()->positionToOffset(range.start);
-                    size_t endOffset = m_currentPane->getBuffer()->positionToOffset(range.end);
-                    std::string selectedText = m_currentPane->getBuffer()->getText(startOffset, endOffset - startOffset);
+                    std::string selectedText = m_currentPane->getBuffer()->getText(range);
                     
                     // Check if selection matches search pattern
                     search::SearchOptions opts;
@@ -931,44 +958,74 @@ void Window::renderDialogs() {
 }
 
 void Window::openFile(const std::string& path) {
-    if (m_currentPane) {
-        if (m_currentPane->getBuffer()->loadFromFile(path)) {
-            m_currentFilePath = path;
-            
-            // Set up syntax highlighting based on file extension
-            auto* langDef = syntax::LanguageRegistry::instance().getLanguageByFilename(path);
-            if (langDef) {
-                auto highlighter = std::make_shared<syntax::Highlighter>(*langDef);
-                m_currentPane->setHighlighter(highlighter);
-                
-                // Highlight all visible lines
-                highlighter->highlightText(m_currentPane->getBuffer()->getText());
-            }
+    // Reuse the current pane only if it is a pristine, untitled buffer;
+    // otherwise open the file in its own new tab so multiple files coexist.
+    EditorPane* pane = m_currentPane;
+    bool reuseCurrent = pane && pane->getFilePath().empty() &&
+                        pane->getBuffer()->empty() && !pane->getBuffer()->isModified();
+    if (!reuseCurrent) {
+        m_panes.push_back(std::make_unique<EditorPane>());
+        pane = m_panes.back().get();
+    }
+
+    if (!pane->getBuffer()->loadFromFile(path)) {
+        // Load failed: discard the speculatively-added pane, keep current.
+        if (!reuseCurrent) {
+            m_panes.pop_back();
         }
+        return;
+    }
+
+    pane->setFilePath(path);
+    pane->getBuffer()->setModified(false);
+    m_currentPane = pane;
+
+    // Set up syntax highlighting based on the file extension. The token cache
+    // is (re)built lazily on the next render via the highlight-dirty flag.
+    auto* langDef = syntax::LanguageRegistry::instance().getLanguageByFilename(path);
+    if (langDef) {
+        pane->setHighlighter(std::make_shared<syntax::Highlighter>(*langDef));
     }
 }
 
 void Window::saveCurrentFile() {
-    if (m_currentPane && !m_currentFilePath.empty()) {
-        m_currentPane->getBuffer()->saveToFile(m_currentFilePath);
+    if (m_currentPane && !m_currentPane->getFilePath().empty()) {
+        if (m_currentPane->getBuffer()->saveToFile(m_currentPane->getFilePath())) {
+            m_currentPane->getBuffer()->setModified(false);
+        }
     } else {
         showSaveFileDialog();
     }
 }
 
 void Window::saveFileAs(const std::string& path) {
-    if (m_currentPane) {
-        m_currentPane->getBuffer()->saveToFile(path);
-        m_currentFilePath = path;
+    if (!m_currentPane) {
+        return;
+    }
+    if (!m_currentPane->getBuffer()->saveToFile(path)) {
+        return;
+    }
+    m_currentPane->setFilePath(path);
+    m_currentPane->getBuffer()->setModified(false);
+
+    // Attach a highlighter for the new file type if the pane doesn't have one.
+    if (!m_currentPane->getHighlighter()) {
+        auto* langDef = syntax::LanguageRegistry::instance().getLanguageByFilename(path);
+        if (langDef) {
+            m_currentPane->setHighlighter(std::make_shared<syntax::Highlighter>(*langDef));
+        }
     }
 }
 
 void Window::newFile() {
-    if (m_panes.empty() || !m_currentPane->getBuffer()->empty()) {
-        m_panes.push_back(std::make_unique<EditorPane>());
-        m_currentPane = m_panes.back().get();
+    // If the current pane is already a pristine untitled buffer, just keep it
+    // rather than spawning a second empty tab.
+    if (m_currentPane && m_currentPane->getFilePath().empty() &&
+        m_currentPane->getBuffer()->empty() && !m_currentPane->getBuffer()->isModified()) {
+        return;
     }
-    m_currentFilePath.clear();
+    m_panes.push_back(std::make_unique<EditorPane>());
+    m_currentPane = m_panes.back().get();
 }
 
 void Window::closeCurrentFile() {
@@ -1147,13 +1204,20 @@ void Window::keyCallback(GLFWwindow* window, int key, int scancode, int action, 
             case GLFW_KEY_F: self->showFindDialog(); return;
             case GLFW_KEY_H: self->showReplaceDialog(); return;
             case GLFW_KEY_Z:
-                if (self->m_currentPane && self->m_currentPane->getBuffer()->canUndo())
+                if (self->m_currentPane && self->m_currentPane->getBuffer()->canUndo()) {
                     self->m_currentPane->getBuffer()->undo();
+                    self->m_currentPane->markHighlightDirty();
+                }
                 return;
             case GLFW_KEY_Y:
-                if (self->m_currentPane && self->m_currentPane->getBuffer()->canRedo())
+                if (self->m_currentPane && self->m_currentPane->getBuffer()->canRedo()) {
                     self->m_currentPane->getBuffer()->redo();
+                    self->m_currentPane->markHighlightDirty();
+                }
                 return;
+            case GLFW_KEY_C: self->copySelection(); return;
+            case GLFW_KEY_X: self->cutSelection(); return;
+            case GLFW_KEY_V: self->pasteClipboard(); return;
         }
     }
     
@@ -1199,7 +1263,7 @@ void Window::dropCallback(GLFWwindow* window, int count, const char** paths) {
     }
 }
 
-void Window::framebufferSizeCallback(GLFWwindow* window, int width, int height) {
+void Window::framebufferSizeCallback([[maybe_unused]] GLFWwindow* window, int width, int height) {
     glViewport(0, 0, width, height);
 }
 
@@ -1243,6 +1307,70 @@ void Window::selectMatch(const search::SearchMatch& match) {
     
     // Scroll to make the match visible
     m_currentPane->scrollToCursor();
+}
+
+// ====================
+// Clipboard operations
+// ====================
+
+void Window::copySelection() {
+    if (!m_currentPane) return;
+    auto& selection = m_currentPane->getSelection();
+    if (!selection.hasSelection()) return;
+
+    auto range = selection.getNormalizedRange();
+    std::string text = m_currentPane->getBuffer()->getText(range);
+
+    m_clipboard.copy(text);
+    editor::Clipboard::copyToSystem(text);
+}
+
+void Window::cutSelection() {
+    if (!m_currentPane) return;
+    auto& selection = m_currentPane->getSelection();
+    if (!selection.hasSelection()) return;
+
+    auto range = selection.getNormalizedRange();
+    std::string text = m_currentPane->getBuffer()->getText(range);
+
+    m_clipboard.cut(text);
+    editor::Clipboard::copyToSystem(text);
+
+    // Remove the selected text and collapse the cursor to the cut point.
+    m_currentPane->getBuffer()->remove(range);
+    m_currentPane->getCursor().setPosition(range.start);
+    selection.clearSelection();
+    m_currentPane->markHighlightDirty();
+}
+
+void Window::pasteClipboard() {
+    if (!m_currentPane) return;
+
+    // Prefer the system clipboard; fall back to the internal history.
+    std::string text;
+    if (auto sys = editor::Clipboard::pasteFromSystem()) {
+        text = *sys;
+    } else if (auto entry = m_clipboard.paste()) {
+        text = entry->text;
+    }
+    if (text.empty()) return;
+
+    auto& selection = m_currentPane->getSelection();
+    auto& buffer = *m_currentPane->getBuffer();
+    auto& cursor = m_currentPane->getCursor();
+
+    // Replace any active selection first.
+    if (selection.hasSelection()) {
+        auto range = selection.getNormalizedRange();
+        buffer.remove(range);
+        cursor.setPosition(range.start);
+        selection.clearSelection();
+    }
+
+    size_t offset = buffer.positionToOffset(cursor.getPosition());
+    buffer.insert(offset, text);
+    cursor.setPosition(buffer.offsetToPosition(offset + text.size()));
+    m_currentPane->markHighlightDirty();
 }
 
 } // namespace ui

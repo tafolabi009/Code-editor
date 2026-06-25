@@ -408,7 +408,10 @@ void TextBuffer::insert(const Position& pos, std::string_view text) {
 
 void TextBuffer::insert(size_t offset, std::string_view text) {
     if (text.empty()) return;
-    
+
+    // Clamp to end: inserting past the end appends (editor-friendly behaviour).
+    offset = std::min(offset, m_buffer.size());
+
     // Create undo record
     EditRecord record;
     record.operation = EditOperation::Insert;

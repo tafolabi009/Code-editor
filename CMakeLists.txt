@@ -76,16 +76,25 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
-# Include FetchContent for dependencies
+# Include FetchContent for dependencies (used only as a fallback when a
+# system-installed package is not found, so the project builds offline / in CI
+# without network access to clone dependencies).
 include(FetchContent)
 
-# JSON library for configuration (always needed)
-FetchContent_Declare(
-    json
-    GIT_REPOSITORY https://github.com/nlohmann/json.git
-    GIT_TAG v3.11.3
-)
-FetchContent_MakeAvailable(json)
+# JSON library for configuration (always needed).
+# Prefer a system-installed nlohmann_json; fall back to fetching it.
+find_package(nlohmann_json 3.11 QUIET)
+if(NOT nlohmann_json_FOUND)
+    message(STATUS "nlohmann_json not found on system - fetching via FetchContent")
+    FetchContent_Declare(
+        json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG v3.11.3
+    )
+    FetchContent_MakeAvailable(json)
+else()
+    message(STATUS "Using system nlohmann_json ${nlohmann_json_VERSION}")
+endif()
 
 # GUI dependencies (optional)
 if(BUILD_GUI)
@@ -197,13 +206,22 @@ endif()
 if(BUILD_TESTS)
     enable_testing()
     
-    FetchContent_Declare(
-        googletest
-        GIT_REPOSITORY https://github.com/google/googletest.git
-        GIT_TAG v1.14.0
-    )
-    FetchContent_MakeAvailable(googletest)
-    
+    # Prefer a system-installed GTest; fall back to fetching it.
+    find_package(GTest QUIET)
+    if(NOT GTest_FOUND)
+        message(STATUS "GTest not found on system - fetching via FetchContent")
+        FetchContent_Declare(
+            googletest
+            GIT_REPOSITORY https://github.com/google/googletest.git
+            GIT_TAG v1.14.0
+        )
+        # Prevent googletest from overriding our compiler/linker options on MSVC
+        set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+        FetchContent_MakeAvailable(googletest)
+    else()
+        message(STATUS "Using system GTest ${GTest_VERSION}")
+    endif()
+
     add_executable(test_text_buffer tests/test_text_buffer.cpp)
     target_link_libraries(test_text_buffer PRIVATE editor_core GTest::gtest_main)
     
@@ -217,14 +235,20 @@ endif()
 
 # Benchmarks
 if(BUILD_BENCHMARKS)
-    FetchContent_Declare(
-        benchmark
-        GIT_REPOSITORY https://github.com/google/benchmark.git
-        GIT_TAG v1.8.3
-    )
-    set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(benchmark)
-    
+    find_package(benchmark QUIET)
+    if(NOT benchmark_FOUND)
+        message(STATUS "Google Benchmark not found on system - fetching via FetchContent")
+        FetchContent_Declare(
+            benchmark
+            GIT_REPOSITORY https://github.com/google/benchmark.git
+            GIT_TAG v1.8.3
+        )
+        set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+        FetchContent_MakeAvailable(benchmark)
+    else()
+        message(STATUS "Using system Google Benchmark ${benchmark_VERSION}")
+    endif()
+
     add_executable(bench_search benchmarks/bench_search.cpp)
     target_link_libraries(bench_search PRIVATE editor_core benchmark::benchmark)
     

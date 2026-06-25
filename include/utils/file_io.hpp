@@ -6,6 +6,7 @@
 #include <functional>
 #include <future>
 #include <vector>
+#include <memory>
 
 namespace utils {
 

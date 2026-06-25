@@ -166,7 +166,8 @@ void Selection::startDragSelection(const Position& pos) {
 
 void Selection::updateDragSelection(const Position& pos) {
     if (!m_isDragging) return;
-    // Cursor position is updated by the caller
+    // Extend the selection from the drag anchor to the current position.
+    m_cursor->setPosition(pos);
 }
 
 void Selection::endDragSelection() {

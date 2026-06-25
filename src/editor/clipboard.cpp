@@ -92,16 +92,20 @@ std::optional<std::string> Clipboard::pasteFromSystem() {
     return text;
     
 #elif defined(__linux__)
-    // Use xclip or xsel if available
+    // Use xclip or xsel if available. A custom deleter avoids taking the
+    // address of pclose (whose function attributes trip -Wignored-attributes).
+    struct PipeCloser {
+        void operator()(FILE* f) const { if (f) pclose(f); }
+    };
+    using PipePtr = std::unique_ptr<FILE, PipeCloser>;
+
     std::array<char, 4096> buffer;
     std::string result;
-    
-    std::unique_ptr<FILE, decltype(&pclose)> pipe(
-        popen("xclip -selection clipboard -o 2>/dev/null", "r"), pclose);
-    
+
+    PipePtr pipe(popen("xclip -selection clipboard -o 2>/dev/null", "r"));
+
     if (!pipe) {
-        pipe = std::unique_ptr<FILE, decltype(&pclose)>(
-            popen("xsel --clipboard --output 2>/dev/null", "r"), pclose);
+        pipe = PipePtr(popen("xsel --clipboard --output 2>/dev/null", "r"));
     }
     
     if (!pipe) {

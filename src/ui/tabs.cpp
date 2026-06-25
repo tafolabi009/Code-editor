@@ -188,7 +188,8 @@ void TabBar::goToTab(size_t index) {
     setActiveTab(index);
 }
 
-void TabBar::render(const EditorTheme& theme, const EditorConfig& config) {
+void TabBar::render([[maybe_unused]] const EditorTheme& theme,
+                    [[maybe_unused]] const EditorConfig& config) {
     if (m_tabs.empty()) return;
     
     ImGuiTabBarFlags flags = ImGuiTabBarFlags_Reorderable |
@@ -256,7 +257,7 @@ void TabBar::beginDrag(size_t index) {
     m_dragSourceIndex = index;
 }
 
-void TabBar::updateDrag(float mouseX) {
+void TabBar::updateDrag([[maybe_unused]] float mouseX) {
     // Calculate target position based on mouse X
     // This would require knowing tab widths
 }
