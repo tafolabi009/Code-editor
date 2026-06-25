@@ -415,3 +415,9 @@ simd_utf8_count_codepoints:
 .count_done:
     pop rbp
     ret
+
+; Mark the stack as non-executable (ELF). Silences the linker
+; "missing .note.GNU-stack section implies executable stack" warning.
+%ifidn __OUTPUT_FORMAT__, elf64
+section .note.GNU-stack noalloc noexec nowrite progbits
+%endif
