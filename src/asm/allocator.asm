@@ -10,10 +10,12 @@
 %ifdef WIN64
     %define ARG1 rcx
     %define ARG2 rdx
+    %define ARG2b dl         ; low byte of the 2nd argument
     %define ARG3 r8
 %else
     %define ARG1 rdi
     %define ARG2 rsi
+    %define ARG2b sil        ; low byte of the 2nd argument
     %define ARG3 rdx
 %endif
 
@@ -391,7 +393,13 @@ asm_aligned_alloc:
     lea rcx, [rax + 8]      ; Leave room for original pointer
     add rcx, rbx
     dec rcx
-    and rcx, ~(rbx - 1)     ; Align to boundary (assumes power of 2)
+    ; Align down to the alignment boundary (assumes power of 2). The mask
+    ; ~(alignment - 1) must be built at runtime since alignment is in a
+    ; register, not a constant.
+    mov r8, rbx
+    dec r8
+    not r8                  ; r8 = ~(alignment - 1)
+    and rcx, r8
     
     ; Store original pointer before aligned address
     mov [rcx - 8], rax
@@ -440,4 +448,10 @@ asm_aligned_free:
 %else
     extern malloc
     extern free
+%endif
+
+; Mark the stack as non-executable (ELF). Silences the linker
+; "missing .note.GNU-stack section implies executable stack" warning.
+%ifidn __OUTPUT_FORMAT__, elf64
+section .note.GNU-stack noalloc noexec nowrite progbits
 %endif

@@ -288,7 +288,8 @@ std::vector<SearchMatch> SearchEngine::searchPlain(std::string_view text,
     
 #ifdef HAS_ASM_OPTIMIZATIONS
     if (m_useSIMD && pattern.size() >= 4 && text.size() >= 64) {
-        // Use SIMD search for larger texts
+        // The SIMD kernels report non-overlapping matches, so at most
+        // textLen/patternLen + 1 positions are produced.
         std::vector<size_t> positions(text.size() / pattern.size() + 1);
         size_t count;
         
@@ -306,18 +307,40 @@ std::vector<SearchMatch> SearchEngine::searchPlain(std::string_view text,
         
         if (count > 0) {
             results.reserve(count);
+            // The SIMD kernel returns every match start in ascending order,
+            // including overlapping ones. Apply the same non-overlapping +
+            // whole-word filtering and incremental O(n) line/column tracking as
+            // the scalar path so both produce identical results.
+            size_t scanned = 0;       // offset up to which newlines are counted
+            size_t curLine = 0;
+            size_t curLineStart = 0;
+            size_t lastEnd = 0;       // end of the previously accepted match
             for (size_t i = 0; i < count; ++i) {
                 if (m_cancelled.load()) break;
-                
+
                 size_t offset = positions[i];
-                if (!options.wholeWord || isWordBoundary(text, offset, pattern.size())) {
-                    SearchMatch match;
-                    match.offset = offset;
-                    match.length = pattern.size();
-                    match.line = lineFromOffset(text, offset);
-                    match.column = columnFromOffset(text, offset);
-                    results.push_back(match);
+                if (offset < lastEnd) {
+                    continue;  // overlaps the previous match
                 }
+                if (options.wholeWord &&
+                    !isWordBoundary(text, offset, pattern.size())) {
+                    continue;
+                }
+
+                for (; scanned < offset; ++scanned) {
+                    if (text[scanned] == '\n') {
+                        ++curLine;
+                        curLineStart = scanned + 1;
+                    }
+                }
+
+                SearchMatch match;
+                match.offset = offset;
+                match.length = pattern.size();
+                match.line = curLine;
+                match.column = offset - curLineStart;
+                results.push_back(match);
+                lastEnd = offset + pattern.size();
             }
             return results;
         }

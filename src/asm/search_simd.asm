@@ -12,6 +12,7 @@
     %define ARG1 rcx
     %define ARG2 rdx
     %define ARG3 r8
+    %define ARG3b r8b        ; low byte of the 3rd argument
     %define ARG4 r9
     %define ARG5 [rsp+40]
     %define ARG6 [rsp+48]
@@ -20,6 +21,7 @@
     %define ARG1 rdi
     %define ARG2 rsi
     %define ARG3 rdx
+    %define ARG3b dl         ; low byte of the 3rd argument
     %define ARG4 rcx
     %define ARG5 r8
     %define ARG6 r9
@@ -138,18 +140,27 @@ simd_search_avx2:
     ; Found a match - store position
     cmp rax, [rbp-8]        ; Check maxResults
     jge .no_match
-    
+
     mov [rbx + rax*8], r10
     inc rax
-    
+
+    ; Non-overlapping: resume scanning past the end of this match so the
+    ; results buffer only needs room for non-overlapping matches.
+    pop r8                  ; discard saved window base
+    pop rcx                 ; discard saved mask
+    lea r8, [r10 + r15]     ; next scan position = match start + patternLen
+    cmp r8, r9
+    jb .search_loop
+    jmp .done
+
 .no_match:
     pop r8
     pop rcx
-    
+
     ; Continue processing bits in mask
     test ecx, ecx
     jnz .process_matches
-    
+
 .advance_32:
     add r8, 32
     cmp r8, r9
@@ -182,7 +193,9 @@ simd_search_avx2:
     jge .scalar_next
     mov [rbx + rax*8], r8
     inc rax
-    
+    add r8, r15            ; non-overlapping: skip past the match
+    jmp .scalar_search
+
 .scalar_next:
     inc r8
     jmp .scalar_search
@@ -282,7 +295,8 @@ simd_search_sse42:
     inc rax
     
 .sse_continue:
-    lea r8, [r8 + rcx + 1]
+    ; Non-overlapping: resume past the end of the match (r10 = match start).
+    lea r8, [r10 + r15]
     jmp .sse_search_loop
     
 .sse_long_pattern:
@@ -331,7 +345,15 @@ simd_search_sse42:
     jge .sse_no_match
     mov [rbx + rax*8], r10
     inc rax
-    
+
+    ; Non-overlapping: resume past the end of this match.
+    pop r8                  ; discard saved window base
+    pop rcx                 ; discard saved mask
+    lea r8, [r10 + r15]
+    cmp r8, r9
+    jb .sse_long_loop
+    jmp .sse_done
+
 .sse_no_match:
     pop r8
     pop rcx
@@ -366,7 +388,9 @@ simd_search_sse42:
     jge .sse_scalar_next
     mov [rbx + rax*8], r8
     inc rax
-    
+    add r8, r15            ; non-overlapping: skip past the match
+    jmp .sse_scalar
+
 .sse_scalar_next:
     inc r8
     jmp .sse_scalar
@@ -444,3 +468,9 @@ simd_memchr:
 .memchr_done:
     pop rbp
     ret
+
+; Mark the stack as non-executable (ELF). Silences the linker
+; "missing .note.GNU-stack section implies executable stack" warning.
+%ifidn __OUTPUT_FORMAT__, elf64
+section .note.GNU-stack noalloc noexec nowrite progbits
+%endif

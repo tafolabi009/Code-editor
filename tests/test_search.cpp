@@ -442,12 +442,59 @@ TEST_F(SearchEngineTest, DisableSIMD) {
 }
 
 // ============================================================================
+// SIMD-path coverage
+//
+// The SIMD kernel only runs for patterns >= 4 bytes on text >= 64 bytes. These
+// cases ensure that path matches the scalar path: non-overlapping results,
+// correct whole-word filtering, and correct line/column. They pass whether or
+// not the assembly is compiled in (scalar fallback otherwise).
+// ============================================================================
+
+TEST_F(SearchEngineTest, SimdNonOverlappingLongPattern) {
+    std::string text(100, 'A');  // long enough to take the SIMD path
+
+    SearchOptions options;
+    auto results = engine->search(text, "AAAA", options);
+
+    // 100 / 4 == 25 non-overlapping matches.
+    EXPECT_EQ(results.size(), 25u);
+    for (size_t i = 0; i < results.size(); ++i) {
+        EXPECT_EQ(results[i].offset, i * 4);
+    }
+}
+
+TEST_F(SearchEngineTest, SimdWholeWordLongText) {
+    // Pad so the text exceeds the 64-byte SIMD threshold.
+    std::string text = std::string(80, ' ') + "word wordy word";
+
+    SearchOptions options;
+    options.wholeWord = true;
+    auto results = engine->search(text, "word", options);
+
+    // Two standalone "word"s; the "word" inside "wordy" must not match.
+    EXPECT_EQ(results.size(), 2u);
+    EXPECT_EQ(results[0].offset, 80u);
+    EXPECT_EQ(results[1].offset, 91u);
+}
+
+TEST_F(SearchEngineTest, SimdLineColumnLongText) {
+    std::string text = std::string(70, 'x') + "\nfind ABCD here";
+
+    SearchOptions options;
+    auto results = engine->search(text, "ABCD", options);
+
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_EQ(results[0].line, 1u);
+    EXPECT_EQ(results[0].column, 5u);
+}
+
+// ============================================================================
 // Cancellation Tests
 // ============================================================================
 
 TEST_F(SearchEngineTest, Cancellation) {
     EXPECT_FALSE(engine->isCancelled());
-    
+
     engine->cancel();
     EXPECT_TRUE(engine->isCancelled());
 }

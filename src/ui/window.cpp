@@ -31,24 +31,37 @@ namespace ui {
 // EditorPane Implementation
 // ====================
 
-EditorPane::EditorPane() 
+EditorPane::EditorPane()
     : m_buffer(std::make_shared<editor::TextBuffer>())
     , m_cursor(std::make_unique<editor::Cursor>(m_buffer.get()))
     , m_selection(std::make_unique<editor::Selection>(m_buffer.get(), m_cursor.get()))
 {
+    hookBufferChanges();
 }
 
 EditorPane::~EditorPane() = default;
+
+void EditorPane::hookBufferChanges() {
+    // Record the smallest changed line on every buffer mutation so the next
+    // render can re-highlight incrementally from there.
+    m_buffer->addChangeCallback([this](const editor::Range& range, const std::string&) {
+        if (range.start.line < m_dirtyFromLine) {
+            m_dirtyFromLine = range.start.line;
+        }
+    });
+}
 
 void EditorPane::setBuffer(std::shared_ptr<editor::TextBuffer> buffer) {
     m_buffer = buffer;
     m_cursor = std::make_unique<editor::Cursor>(m_buffer.get());
     m_selection = std::make_unique<editor::Selection>(m_buffer.get(), m_cursor.get());
+    hookBufferChanges();
+    m_needsFullHighlight = true;
 }
 
 void EditorPane::setHighlighter(std::shared_ptr<syntax::Highlighter> highlighter) {
     m_highlighter = highlighter;
-    m_highlightDirty = true;  // (re)build the token cache on next render
+    m_needsFullHighlight = true;  // build the token cache on next render
 }
 
 std::string EditorPane::getDisplayName() const {
@@ -198,10 +211,17 @@ void EditorPane::renderGutter(const EditorTheme& theme, const EditorConfig& conf
 }
 
 void EditorPane::renderText(const EditorTheme& theme, const EditorConfig& config) {
-    // Rebuild syntax highlighting if the buffer changed since the last frame.
-    if (m_highlighter && m_highlightDirty) {
-        m_highlighter->highlightText(m_buffer->getText());
-        m_highlightDirty = false;
+    // Refresh syntax highlighting if the buffer changed since the last frame.
+    if (m_highlighter) {
+        auto getLine = [this](size_t i) { return m_buffer->getLine(i); };
+        if (m_needsFullHighlight) {
+            m_highlighter->highlightAllLines(getLine, m_buffer->lineCount());
+            m_needsFullHighlight = false;
+            m_dirtyFromLine = kNoDirtyLine;
+        } else if (m_dirtyFromLine != kNoDirtyLine) {
+            m_highlighter->applyEdit(getLine, m_buffer->lineCount(), m_dirtyFromLine);
+            m_dirtyFromLine = kNoDirtyLine;
+        }
     }
 
     ImDrawList* drawList = ImGui::GetWindowDrawList();
@@ -442,11 +462,15 @@ void EditorPane::handleScroll(double xoffset, double yoffset) {
     m_scrollX = std::max(0.0f, m_scrollX);
 }
 
+// NOTE: buffer mutations below flow through TextBuffer::insert/remove, which
+// fire the change callback installed in hookBufferChanges(); that callback marks
+// the changed line for incremental re-highlighting, so no explicit flag is set
+// here.
+
 void EditorPane::insertChar(char c) {
     auto pos = m_cursor->getPosition();
     m_buffer->insert(pos, std::string_view(&c, 1));
     m_cursor->move(editor::CursorDirection::Right);
-    m_highlightDirty = true;
 }
 
 void EditorPane::insertText(const std::string& text) {
@@ -456,7 +480,6 @@ void EditorPane::insertText(const std::string& text) {
     for (size_t i = 0; i < text.length(); ++i) {
         m_cursor->move(editor::CursorDirection::Right);
     }
-    m_highlightDirty = true;
 }
 
 void EditorPane::deleteSelection() {
@@ -465,7 +488,6 @@ void EditorPane::deleteSelection() {
         m_buffer->remove(range);
         m_cursor->setPosition(range.start);
         m_selection->clearSelection();
-        m_highlightDirty = true;
     }
 }
 
@@ -478,7 +500,6 @@ void EditorPane::handleBackspace() {
             m_cursor->move(editor::CursorDirection::Left);
             auto newPos = m_cursor->getPosition();
             m_buffer->remove(m_buffer->positionToOffset(newPos), 1);
-            m_highlightDirty = true;
         }
     }
 }
@@ -490,7 +511,6 @@ void EditorPane::handleDelete() {
         size_t offset = m_cursor->getOffset();
         if (offset < m_buffer->size()) {
             m_buffer->remove(offset, 1);
-            m_highlightDirty = true;
         }
     }
 }
@@ -711,6 +731,7 @@ void Window::renderMenuBar() {
             ImGui::Separator();
             if (ImGui::MenuItem("Find...", "Ctrl+F")) showFindDialog();
             if (ImGui::MenuItem("Replace...", "Ctrl+H")) showReplaceDialog();
+            if (ImGui::MenuItem("Find in All Tabs...", "Ctrl+Shift+F")) showFindInFilesDialog();
             ImGui::EndMenu();
         }
         
@@ -955,6 +976,51 @@ void Window::renderDialogs() {
         }
         ImGui::EndPopup();
     }
+
+    // Find in all open tabs
+    if (m_showFindInFilesDialog) {
+        ImGui::SetNextWindowSize(ImVec2(560, 360), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Find in All Tabs", &m_showFindInFilesDialog)) {
+            if (m_findText.capacity() < 256) m_findText.reserve(256);
+            m_findText.resize(256, '\0');
+
+            bool enterPressed = ImGui::InputText("Search", &m_findText[0], 256,
+                                                 ImGuiInputTextFlags_EnterReturnsTrue);
+            m_findText = m_findText.c_str();  // trim trailing nulls
+
+            ImGui::Checkbox("Case Sensitive", &m_findCaseSensitive);
+            ImGui::SameLine();
+            ImGui::Checkbox("Regex", &m_findRegex);
+            ImGui::SameLine();
+            if (ImGui::Button("Search All") || enterPressed) {
+                performGlobalSearch();
+            }
+
+            ImGui::Separator();
+            if (m_globalResults.empty()) {
+                ImGui::TextDisabled("%s", m_findText.empty()
+                                        ? "Enter a query and press Search All."
+                                        : "No matches across open tabs.");
+            } else {
+                ImGui::Text("%zu match%s", m_globalResults.size(),
+                            m_globalResults.size() == 1 ? "" : "es");
+            }
+
+            ImGui::BeginChild("GlobalResults", ImVec2(0, 0), true);
+            for (size_t i = 0; i < m_globalResults.size(); ++i) {
+                const auto& r = m_globalResults[i];
+                // Stable per-row id even when files share a name.
+                std::string label = r.file + ":" + std::to_string(r.line + 1) +
+                                    ":" + std::to_string(r.column + 1) + "  " +
+                                    r.preview + "##g" + std::to_string(i);
+                if (ImGui::Selectable(label.c_str())) {
+                    jumpToGlobalResult(r);
+                }
+            }
+            ImGui::EndChild();
+        }
+        ImGui::End();
+    }
 }
 
 void Window::openFile(const std::string& path) {
@@ -1172,6 +1238,12 @@ void Window::showSettingsDialog() {
     m_showSettingsDialog = true;
 }
 
+void Window::showFindInFilesDialog() {
+    m_showFindInFilesDialog = true;
+    m_showFindDialog = false;
+    m_showReplaceDialog = false;
+}
+
 int Window::getWidth() const {
     int width, height;
     glfwGetWindowSize(m_window, &width, &height);
@@ -1201,7 +1273,10 @@ void Window::keyCallback(GLFWwindow* window, int key, int scancode, int action, 
                 if (mods & GLFW_MOD_SHIFT) self->showSaveFileDialog();
                 else self->saveCurrentFile();
                 return;
-            case GLFW_KEY_F: self->showFindDialog(); return;
+            case GLFW_KEY_F:
+                if (mods & GLFW_MOD_SHIFT) self->showFindInFilesDialog();
+                else self->showFindDialog();
+                return;
             case GLFW_KEY_H: self->showReplaceDialog(); return;
             case GLFW_KEY_Z:
                 if (self->m_currentPane && self->m_currentPane->getBuffer()->canUndo()) {
@@ -1309,6 +1384,62 @@ void Window::selectMatch(const search::SearchMatch& match) {
     m_currentPane->scrollToCursor();
 }
 
+void Window::performGlobalSearch() {
+    m_globalResults.clear();
+    if (m_findText.empty()) {
+        return;
+    }
+
+    search::SearchOptions opts;
+    opts.caseSensitive = m_findCaseSensitive;
+    opts.useRegex = m_findRegex;
+
+    for (size_t paneIndex = 0; paneIndex < m_panes.size(); ++paneIndex) {
+        auto& pane = m_panes[paneIndex];
+        auto& buffer = *pane->getBuffer();
+        std::string text = buffer.getText();
+
+        auto matches = m_searchEngine.search(text, m_findText, opts);
+        for (const auto& match : matches) {
+            GlobalSearchResult result;
+            result.paneIndex = paneIndex;
+            result.file = pane->getDisplayName();
+            result.offset = match.offset;
+            result.length = match.length;
+
+            auto pos = buffer.offsetToPosition(match.offset);
+            result.line = pos.line;
+            result.column = pos.column;
+
+            // Build a trimmed single-line preview around the match.
+            std::string lineText = buffer.getLine(pos.line);
+            const size_t kMaxPreview = 120;
+            if (lineText.size() > kMaxPreview) {
+                lineText = lineText.substr(0, kMaxPreview) + "...";
+            }
+            size_t firstNonWs = lineText.find_first_not_of(" \t");
+            if (firstNonWs != std::string::npos && firstNonWs > 0) {
+                lineText = lineText.substr(firstNonWs);
+            }
+            result.preview = lineText;
+
+            m_globalResults.push_back(std::move(result));
+        }
+    }
+}
+
+void Window::jumpToGlobalResult(const GlobalSearchResult& result) {
+    if (result.paneIndex >= m_panes.size()) {
+        return;
+    }
+    m_currentPane = m_panes[result.paneIndex].get();
+
+    search::SearchMatch match;
+    match.offset = result.offset;
+    match.length = result.length;
+    selectMatch(match);
+}
+
 // ====================
 // Clipboard operations
 // ====================
@@ -1337,10 +1468,10 @@ void Window::cutSelection() {
     editor::Clipboard::copyToSystem(text);
 
     // Remove the selected text and collapse the cursor to the cut point.
+    // (The buffer's change callback marks the line for incremental re-highlight.)
     m_currentPane->getBuffer()->remove(range);
     m_currentPane->getCursor().setPosition(range.start);
     selection.clearSelection();
-    m_currentPane->markHighlightDirty();
 }
 
 void Window::pasteClipboard() {
@@ -1370,7 +1501,7 @@ void Window::pasteClipboard() {
     size_t offset = buffer.positionToOffset(cursor.getPosition());
     buffer.insert(offset, text);
     cursor.setPosition(buffer.offsetToPosition(offset + text.size()));
-    m_currentPane->markHighlightDirty();
+    // The buffer's change callback marks the line for incremental re-highlight.
 }
 
 } // namespace ui

@@ -4,11 +4,12 @@ A high-performance code editor built from scratch in C++17/20 with optimized x86
 
 ## Features
 
-- **Blazing Fast Performance**
-  - < 100ms cold startup time
-  - < 50MB RAM for typical usage
-  - 10GB/sec search throughput with SIMD (AVX2/SSE4.2)
-  - 60 FPS UI with ImGui
+- **Fast and lightweight**
+  - Gap-buffer editing core with incremental, O(changed-lines) re-highlighting
+  - Low memory footprint for typical files
+  - Optional x86-64 SIMD (AVX2/SSE4.2) literal-search kernels (experimental,
+    opt-in via `-DENABLE_ASM=ON`; see *Performance* below)
+  - Immediate-mode ImGui UI
 
 - **Core Editor Features**
   - Gap buffer text storage for O(1) cursor-local edits
@@ -138,15 +139,24 @@ ctest --output-on-failure
 ./bench_search
 ```
 
-## Performance Targets
+## Performance
 
-| Metric | Target | Implementation |
-|--------|--------|---------------|
-| Startup Time | < 100ms | Lazy initialization, minimal dependencies |
-| Memory Usage | < 50MB | Gap buffer, efficient undo storage |
-| Search Throughput | 10GB/sec | AVX2 SIMD with 32-byte processing |
-| UTF-8 Validation | 5GB/sec | SSE4.2 SIMD validation |
-| UI Framerate | 60 FPS | ImGui immediate mode |
+Design goals: fast cold start, modest memory use, and an editing core that
+stays responsive on large files (incremental re-highlighting is O(changed
+lines), not O(file)).
+
+### A note on the SIMD search kernels
+
+The AVX2/SSE4.2 literal-search assembly is **opt-in** (`-DENABLE_ASM=ON`) and
+currently **experimental**. It is correct (covered by the test suite, including
+non-overlapping and whole-word cases) but, in current micro-benchmarks on a
+single-needle scan, it is *not yet faster* than the scalar `std::string::find`
+path — both are well under the aspirational "10 GB/s" figure from early drafts
+of this README. The default build therefore uses the scalar path. Beating a
+good scalar search (e.g. a `memchr`-driven first-byte filter) is tracked as
+future work; the numbers here will be updated with reproducible benchmarks as
+that lands. The assembly is kept in-tree, building and verified, so it can be
+optimized incrementally.
 
 ## Key Components
 

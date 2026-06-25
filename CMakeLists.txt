@@ -291,10 +291,14 @@ if(BUILD_TESTS)
     
     add_executable(test_search tests/test_search.cpp)
     target_link_libraries(test_search PRIVATE editor_core GTest::gtest_main)
-    
+
+    add_executable(test_highlighter tests/test_highlighter.cpp)
+    target_link_libraries(test_highlighter PRIVATE editor_core GTest::gtest_main)
+
     include(GoogleTest)
     gtest_discover_tests(test_text_buffer)
     gtest_discover_tests(test_search)
+    gtest_discover_tests(test_highlighter)
 endif()
 
 # Benchmarks

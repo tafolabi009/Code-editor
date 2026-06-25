@@ -7,6 +7,7 @@
 #include <unordered_set>
 #include <memory>
 #include <regex>
+#include <functional>
 
 namespace syntax {
 
@@ -128,7 +129,22 @@ public:
     
     // Highlight entire text (returns tokens per line)
     std::vector<TokenizedLine> highlightText(std::string_view text);
-    
+
+    // Line-accessor based highlighting. These keep the cache indexed by the
+    // same lines the editor uses (TextBuffer::getLine), which is what makes
+    // incremental updates correct.
+    using LineAccessor = std::function<std::string(size_t)>;
+
+    // (Re)build the whole cache from a line accessor.
+    void highlightAllLines(const LineAccessor& getLine, size_t lineCount);
+
+    // Incrementally re-tokenize after an edit: re-tokenizes from
+    // firstChangedLine downward, cascading only while the multi-line carry
+    // state keeps changing, then stops (convergence). O(changed lines) for the
+    // common case instead of O(whole buffer).
+    void applyEdit(const LineAccessor& getLine, size_t newLineCount,
+                   size_t firstChangedLine);
+
     // Incremental updates
     void invalidateLine(size_t lineIndex);
     void invalidateRange(size_t startLine, size_t endLine);
