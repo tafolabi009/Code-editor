@@ -126,7 +126,7 @@ private:
                                    const char* pattern, size_t patternLen);
     
     // Helper functions
-    bool isWordBoundary(std::string_view text, size_t pos) const;
+    bool isWordBoundary(std::string_view text, size_t pos, size_t length) const;
     std::string buildContext(std::string_view text, size_t matchStart, size_t matchLen) const;
     size_t lineFromOffset(std::string_view text, size_t offset) const;
     size_t columnFromOffset(std::string_view text, size_t offset) const;

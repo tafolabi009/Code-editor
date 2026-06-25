@@ -1,1 +1,0 @@
-/usr/bin/c++  -Wall -Wextra -Wpedantic -mavx2 -msse4.2 -O3 -march=native -mtune=native -flto CMakeFiles/test_text_buffer.dir/tests/test_text_buffer.cpp.o -o bin/test_text_buffer  lib/libeditor_core.a lib/libgtest_main.a -lpthread lib/libgtest.a 

@@ -101,8 +101,7 @@ void StatusBar::render(const EditorTheme& theme, float windowWidth) {
                             ImGuiWindowFlags_NoResize |
                             ImGuiWindowFlags_NoMove |
                             ImGuiWindowFlags_NoScrollbar |
-                            ImGuiWindowFlags_NoSavedSettings |
-                            ImGuiWindowFlags_NoDocking;
+                            ImGuiWindowFlags_NoSavedSettings;
     
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 2));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
@@ -126,7 +125,8 @@ void StatusBar::render(const EditorTheme& theme, float windowWidth) {
     ImGui::PopStyleVar(2);
 }
 
-void StatusBar::renderLeftSection(float x, float width, const EditorTheme& theme) {
+void StatusBar::renderLeftSection([[maybe_unused]] float x, [[maybe_unused]] float width,
+                                  [[maybe_unused]] const EditorTheme& theme) {
     // Cursor position
     if (m_info.hasSelection && m_info.selectedChars > 0) {
         ImGui::Text("Ln %zu, Col %zu (%zu selected)",
@@ -136,7 +136,8 @@ void StatusBar::renderLeftSection(float x, float width, const EditorTheme& theme
     }
 }
 
-void StatusBar::renderCenterSection(float x, float width, const EditorTheme& theme) {
+void StatusBar::renderCenterSection([[maybe_unused]] float x, [[maybe_unused]] float width,
+                                    [[maybe_unused]] const EditorTheme& theme) {
     // Show message if present, otherwise show file info
     if (!m_info.message.empty()) {
         ImGui::TextColored(ImVec4(1.0f, 0.9f, 0.4f, 1.0f), "%s", m_info.message.c_str());
@@ -151,7 +152,8 @@ void StatusBar::renderCenterSection(float x, float width, const EditorTheme& the
     }
 }
 
-void StatusBar::renderRightSection(float x, float width, const EditorTheme& theme) {
+void StatusBar::renderRightSection(float x, [[maybe_unused]] float width,
+                                   [[maybe_unused]] const EditorTheme& theme) {
     // Right-aligned items
     float itemSpacing = 80.0f;
     

@@ -76,49 +76,122 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
-# Include FetchContent for dependencies
+# Include FetchContent for dependencies (used only as a fallback when a
+# system-installed package is not found, so the project builds offline / in CI
+# without network access to clone dependencies).
 include(FetchContent)
 
-# JSON library for configuration (always needed)
-FetchContent_Declare(
-    json
-    GIT_REPOSITORY https://github.com/nlohmann/json.git
-    GIT_TAG v3.11.3
-)
-FetchContent_MakeAvailable(json)
+# JSON library for configuration (always needed).
+# Prefer a system-installed nlohmann_json; fall back to fetching it.
+find_package(nlohmann_json 3.11 QUIET)
+if(NOT nlohmann_json_FOUND)
+    message(STATUS "nlohmann_json not found on system - fetching via FetchContent")
+    FetchContent_Declare(
+        json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG v3.11.3
+    )
+    FetchContent_MakeAvailable(json)
+else()
+    message(STATUS "Using system nlohmann_json ${nlohmann_json_VERSION}")
+endif()
 
 # GUI dependencies (optional)
+option(USE_SYSTEM_IMGUI "Link against a system-installed Dear ImGui instead of fetching it" OFF)
+
 if(BUILD_GUI)
     find_package(OpenGL REQUIRED)
-    find_package(glfw3 CONFIG QUIET)
-    if(NOT glfw3_FOUND)
-        find_package(PkgConfig REQUIRED)
-        pkg_check_modules(GLFW3 REQUIRED glfw3)
-    endif()
-    
-    # ImGui as subdirectory
-    FetchContent_Declare(
-        imgui
-        GIT_REPOSITORY https://github.com/ocornut/imgui.git
-        GIT_TAG v1.90.1
-    )
-    FetchContent_MakeAvailable(imgui)
 
-    # ImGui library
-    add_library(imgui STATIC
-        ${imgui_SOURCE_DIR}/imgui.cpp
-        ${imgui_SOURCE_DIR}/imgui_demo.cpp
-        ${imgui_SOURCE_DIR}/imgui_draw.cpp
-        ${imgui_SOURCE_DIR}/imgui_tables.cpp
-        ${imgui_SOURCE_DIR}/imgui_widgets.cpp
-        ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
-        ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
-    )
-    target_include_directories(imgui PUBLIC 
-        ${imgui_SOURCE_DIR}
-        ${imgui_SOURCE_DIR}/backends
-    )
-    target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
+    # GLFW: prefer a CMake config package, fall back to pkg-config. Resolve a
+    # concrete target name so downstream linking works in both cases.
+    find_package(glfw3 CONFIG QUIET)
+    if(glfw3_FOUND)
+        set(GLFW_TARGET glfw)
+    else()
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(GLFW3 REQUIRED IMPORTED_TARGET glfw3)
+        set(GLFW_TARGET PkgConfig::GLFW3)
+    endif()
+
+    # Decide whether a usable system Dear ImGui is available.
+    set(_imgui_use_system OFF)
+    if(USE_SYSTEM_IMGUI)
+        find_path(IMGUI_INCLUDE_DIR imgui.h PATH_SUFFIXES imgui)
+        find_library(IMGUI_LIBRARY NAMES imgui)
+        if(IMGUI_INCLUDE_DIR AND IMGUI_LIBRARY AND
+           EXISTS "${IMGUI_INCLUDE_DIR}/backends/imgui_impl_glfw.h")
+            set(_imgui_use_system ON)
+        else()
+            message(WARNING "USE_SYSTEM_IMGUI requested but a complete system "
+                            "Dear ImGui was not found; falling back to FetchContent")
+        endif()
+    endif()
+
+    if(_imgui_use_system)
+        message(STATUS "Using system Dear ImGui: ${IMGUI_LIBRARY}")
+
+        # Some distributions (e.g. Debian) ship libimgui without the bundled stb
+        # implementation, expecting stb_truetype / stb_rect_pack to be provided
+        # externally. When that is the case, compile a tiny implementation TU and
+        # link it AFTER the imgui library so the linker can resolve the symbols.
+        option(IMGUI_SYSTEM_NEEDS_STB
+               "System Dear ImGui needs external stb_truetype/stb_rect_pack" ON)
+
+        add_library(imgui INTERFACE)
+        target_include_directories(imgui INTERFACE
+            ${IMGUI_INCLUDE_DIR}
+            ${IMGUI_INCLUDE_DIR}/backends
+        )
+
+        if(IMGUI_SYSTEM_NEEDS_STB)
+            find_path(STB_INCLUDE_DIR stb_truetype.h PATH_SUFFIXES stb)
+            if(STB_INCLUDE_DIR)
+                set(_stb_rp "${CMAKE_BINARY_DIR}/imgui_stb_rectpack.cpp")
+                set(_stb_tt "${CMAKE_BINARY_DIR}/imgui_stb_truetype.cpp")
+                file(WRITE "${_stb_rp}"
+                     "#define STB_RECT_PACK_IMPLEMENTATION\n#include <stb/stb_rect_pack.h>\n")
+                file(WRITE "${_stb_tt}"
+                     "#define STB_TRUETYPE_IMPLEMENTATION\n#include <stb/stb_truetype.h>\n")
+                add_library(imgui_stb STATIC "${_stb_rp}" "${_stb_tt}")
+                target_include_directories(imgui_stb PRIVATE ${STB_INCLUDE_DIR})
+                target_compile_options(imgui_stb PRIVATE -w)  # silence third-party warnings
+                # Order matters: libimgui references stb, so stb must follow it.
+                target_link_libraries(imgui INTERFACE ${IMGUI_LIBRARY} imgui_stb)
+            else()
+                message(WARNING "IMGUI_SYSTEM_NEEDS_STB is ON but stb headers were "
+                                "not found; linking may fail. Install libstb-dev "
+                                "or set -DIMGUI_SYSTEM_NEEDS_STB=OFF.")
+                target_link_libraries(imgui INTERFACE ${IMGUI_LIBRARY})
+            endif()
+        else()
+            target_link_libraries(imgui INTERFACE ${IMGUI_LIBRARY})
+        endif()
+
+        target_link_libraries(imgui INTERFACE ${GLFW_TARGET} OpenGL::GL)
+    else()
+        # Default: fetch and build Dear ImGui (with its bundled stb) from source.
+        FetchContent_Declare(
+            imgui
+            GIT_REPOSITORY https://github.com/ocornut/imgui.git
+            GIT_TAG v1.90.1
+        )
+        FetchContent_MakeAvailable(imgui)
+
+        add_library(imgui STATIC
+            ${imgui_SOURCE_DIR}/imgui.cpp
+            ${imgui_SOURCE_DIR}/imgui_demo.cpp
+            ${imgui_SOURCE_DIR}/imgui_draw.cpp
+            ${imgui_SOURCE_DIR}/imgui_tables.cpp
+            ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+            ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+            ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+        )
+        target_include_directories(imgui PUBLIC
+            ${imgui_SOURCE_DIR}
+            ${imgui_SOURCE_DIR}/backends
+        )
+        target_link_libraries(imgui PUBLIC ${GLFW_TARGET} OpenGL::GL)
+    endif()
 endif()
 
 # Include directories
@@ -197,13 +270,22 @@ endif()
 if(BUILD_TESTS)
     enable_testing()
     
-    FetchContent_Declare(
-        googletest
-        GIT_REPOSITORY https://github.com/google/googletest.git
-        GIT_TAG v1.14.0
-    )
-    FetchContent_MakeAvailable(googletest)
-    
+    # Prefer a system-installed GTest; fall back to fetching it.
+    find_package(GTest QUIET)
+    if(NOT GTest_FOUND)
+        message(STATUS "GTest not found on system - fetching via FetchContent")
+        FetchContent_Declare(
+            googletest
+            GIT_REPOSITORY https://github.com/google/googletest.git
+            GIT_TAG v1.14.0
+        )
+        # Prevent googletest from overriding our compiler/linker options on MSVC
+        set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+        FetchContent_MakeAvailable(googletest)
+    else()
+        message(STATUS "Using system GTest ${GTest_VERSION}")
+    endif()
+
     add_executable(test_text_buffer tests/test_text_buffer.cpp)
     target_link_libraries(test_text_buffer PRIVATE editor_core GTest::gtest_main)
     
@@ -217,14 +299,20 @@ endif()
 
 # Benchmarks
 if(BUILD_BENCHMARKS)
-    FetchContent_Declare(
-        benchmark
-        GIT_REPOSITORY https://github.com/google/benchmark.git
-        GIT_TAG v1.8.3
-    )
-    set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(benchmark)
-    
+    find_package(benchmark QUIET)
+    if(NOT benchmark_FOUND)
+        message(STATUS "Google Benchmark not found on system - fetching via FetchContent")
+        FetchContent_Declare(
+            benchmark
+            GIT_REPOSITORY https://github.com/google/benchmark.git
+            GIT_TAG v1.8.3
+        )
+        set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+        FetchContent_MakeAvailable(benchmark)
+    else()
+        message(STATUS "Using system Google Benchmark ${benchmark_VERSION}")
+    endif()
+
     add_executable(bench_search benchmarks/bench_search.cpp)
     target_link_libraries(bench_search PRIVATE editor_core benchmark::benchmark)
     

@@ -79,9 +79,21 @@ Code-editor/
 
 - CMake 3.20+
 - C++17 compatible compiler (GCC 9+, Clang 10+, MSVC 2019+)
-- NASM (for assembly optimizations)
+- NASM (optional, for assembly optimizations — enable with `-DENABLE_ASM=ON`)
 - OpenGL development libraries
-- GLFW (fetched automatically)
+- GLFW (system package or fetched automatically)
+
+Dependencies are resolved from the system first (via `find_package`) and only
+fetched from source when not installed, so the project builds offline when the
+packages are present. On Debian/Ubuntu:
+
+```bash
+sudo apt-get install -y cmake ninja-build g++ nasm \
+    nlohmann-json3-dev libgtest-dev libglfw3-dev libgl1-mesa-dev
+# Optional, to use the system Dear ImGui instead of fetching it:
+sudo apt-get install -y libimgui-dev libstb-dev
+cmake -B build -DUSE_SYSTEM_IMGUI=ON
+```
 
 ### Build Instructions
 

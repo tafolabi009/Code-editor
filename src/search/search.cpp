@@ -145,7 +145,7 @@ std::optional<SearchMatch> SearchEngine::findNext(std::string_view text,
     size_t matchOffset = startOffset + pos;
     
     // Check whole word if needed
-    if (options.wholeWord && !isWordBoundary(text, matchOffset)) {
+    if (options.wholeWord && !isWordBoundary(text, matchOffset, pattern.size())) {
         return findNext(text, pattern, matchOffset + 1, options);
     }
     
@@ -193,7 +193,7 @@ std::optional<SearchMatch> SearchEngine::findPrevious(std::string_view text,
         return std::nullopt;
     }
     
-    if (options.wholeWord && !isWordBoundary(text, pos)) {
+    if (options.wholeWord && !isWordBoundary(text, pos, pattern.size())) {
         if (pos > 0) {
             return findPrevious(text, pattern, pos, options);
         }
@@ -310,7 +310,7 @@ std::vector<SearchMatch> SearchEngine::searchPlain(std::string_view text,
                 if (m_cancelled.load()) break;
                 
                 size_t offset = positions[i];
-                if (!options.wholeWord || isWordBoundary(text, offset)) {
+                if (!options.wholeWord || isWordBoundary(text, offset, pattern.size())) {
                     SearchMatch match;
                     match.offset = offset;
                     match.length = pattern.size();
@@ -324,27 +324,51 @@ std::vector<SearchMatch> SearchEngine::searchPlain(std::string_view text,
     }
 #endif
     
-    // Fallback: standard string search
+    // Fallback: standard string search.
+    //
+    // Line/column are tracked incrementally as the scan position advances so
+    // the whole search is O(n) rather than O(n * matches) - computing them
+    // from scratch per match would be quadratic on match-dense input.
+    if (pattern.empty()) {
+        return results;
+    }
+
     size_t pos = 0;
+    size_t scanned = 0;       // offset up to which newlines have been counted
+    size_t curLine = 0;       // line number at 'scanned'
+    size_t curLineStart = 0;  // offset of the start of 'curLine'
+
     while ((pos = text.find(pattern, pos)) != std::string_view::npos) {
         if (m_cancelled.load()) break;
-        
-        if (!options.wholeWord || isWordBoundary(text, pos)) {
+
+        if (!options.wholeWord || isWordBoundary(text, pos, pattern.size())) {
+            // Advance the line/column cursor up to this match.
+            for (; scanned < pos; ++scanned) {
+                if (text[scanned] == '\n') {
+                    ++curLine;
+                    curLineStart = scanned + 1;
+                }
+            }
+
             SearchMatch match;
             match.offset = pos;
             match.length = pattern.size();
-            match.line = lineFromOffset(text, pos);
-            match.column = columnFromOffset(text, pos);
+            match.line = curLine;
+            match.column = pos - curLineStart;
             results.push_back(match);
+
+            // Non-overlapping: resume scanning after this match.
+            pos += pattern.size();
+        } else {
+            // Rejected candidate (whole-word miss): try the next position.
+            ++pos;
         }
-        
-        ++pos;
-        
+
         if (m_progressCallback && results.size() % 1000 == 0) {
             m_progressCallback(pos, text.size());
         }
     }
-    
+
     return results;
 }
 
@@ -396,7 +420,7 @@ std::vector<SearchMatch> SearchEngine::searchRegex(std::string_view text,
             match.column = columnFromOffset(text, match.offset);
             match.context = buildContext(text, match.offset, match.length);
             
-            if (!options.wholeWord || isWordBoundary(text, match.offset)) {
+            if (!options.wholeWord || isWordBoundary(text, match.offset, match.length)) {
                 results.push_back(match);
             }
         }
@@ -407,8 +431,10 @@ std::vector<SearchMatch> SearchEngine::searchRegex(std::string_view text,
     return results;
 }
 
-std::vector<size_t> SearchEngine::searchSIMD(const char* text, size_t textLen,
-                                              const char* pattern, size_t patternLen) {
+std::vector<size_t> SearchEngine::searchSIMD([[maybe_unused]] const char* text,
+                                             [[maybe_unused]] size_t textLen,
+                                             [[maybe_unused]] const char* pattern,
+                                             [[maybe_unused]] size_t patternLen) {
     std::vector<size_t> results;
     
 #ifdef HAS_ASM_OPTIMIZATIONS
@@ -428,20 +454,22 @@ std::vector<size_t> SearchEngine::searchSIMD(const char* text, size_t textLen,
     return results;
 }
 
-bool SearchEngine::isWordBoundary(std::string_view text, size_t pos) const {
+bool SearchEngine::isWordBoundary(std::string_view text, size_t pos, size_t length) const {
     auto isWordChar = [](char c) {
         return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
     };
-    
-    // Check character before match
+
+    // Character immediately before the match must not be a word character.
     if (pos > 0 && isWordChar(text[pos - 1])) {
         return false;
     }
-    
-    // Check character after match
-    // Note: This assumes we're checking the start of a match
-    // The caller should also verify the end of the match
-    
+
+    // Character immediately after the match must not be a word character.
+    size_t after = pos + length;
+    if (after < text.size() && isWordChar(text[after])) {
+        return false;
+    }
+
     return true;
 }
 

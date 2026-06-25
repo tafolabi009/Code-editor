@@ -1,1 +1,0 @@
-/usr/bin/c++  -Wall -Wextra -Wpedantic -mavx2 -msse4.2 -O3 -march=native -mtune=native -flto CMakeFiles/test_search.dir/tests/test_search.cpp.o -o bin/test_search  lib/libeditor_core.a lib/libgtest_main.a -lpthread lib/libgtest.a 
