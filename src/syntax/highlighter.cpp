@@ -96,8 +96,100 @@ std::vector<TokenizedLine> Highlighter::highlightText(std::string_view text) {
     // Cache results
     m_cache = result;
     ++m_cacheVersion;
-    
+
     return result;
+}
+
+namespace {
+// Compute the multi-line carry state *leaving* a line, given the state that
+// entered it. An empty line carries the incoming state unchanged (e.g. a blank
+// line in the middle of a block comment stays "in comment").
+void computeEndState(const TokenizedLine& line, bool inML, TokenType inType,
+                     bool& outML, TokenType& outType) {
+    outML = inML;
+    outType = inType;
+    if (!line.tokens.empty()) {
+        const Token& last = line.tokens.back();
+        if (last.continuesOnNextLine) {
+            outML = true;
+            outType = last.type;
+        } else {
+            outML = false;
+            outType = TokenType::Normal;
+        }
+    }
+}
+}  // namespace
+
+void Highlighter::highlightAllLines(const LineAccessor& getLine, size_t lineCount) {
+    m_cache.clear();
+    m_cache.reserve(lineCount);
+
+    bool inML = false;
+    TokenType mlType = TokenType::Normal;
+    for (size_t i = 0; i < lineCount; ++i) {
+        TokenizedLine tl = tokenizeLine(getLine(i), inML, mlType);
+        computeEndState(tl, inML, mlType, inML, mlType);
+        m_cache.push_back(std::move(tl));
+    }
+    ++m_cacheVersion;
+}
+
+void Highlighter::applyEdit(const LineAccessor& getLine, size_t newLineCount,
+                            size_t firstChangedLine) {
+    // First edit with no cache, or a totally empty buffer: do a full pass.
+    if (m_cache.empty() || newLineCount == 0) {
+        highlightAllLines(getLine, newLineCount);
+        return;
+    }
+    if (firstChangedLine >= newLineCount) {
+        firstChangedLine = newLineCount - 1;
+    }
+
+    // Reconcile the cache length by splicing entries at the edit point so that
+    // unchanged downstream lines keep their (now shifted) cache slots.
+    long delta = static_cast<long>(newLineCount) - static_cast<long>(m_cache.size());
+    size_t spliceAt = std::min(firstChangedLine + 1, m_cache.size());
+    if (delta > 0) {
+        m_cache.insert(m_cache.begin() + spliceAt,
+                       static_cast<size_t>(delta), TokenizedLine{});
+    } else if (delta < 0) {
+        size_t removeCount = std::min(static_cast<size_t>(-delta),
+                                      m_cache.size() - spliceAt);
+        m_cache.erase(m_cache.begin() + spliceAt,
+                      m_cache.begin() + spliceAt + removeCount);
+    }
+    if (m_cache.size() != newLineCount) {
+        m_cache.resize(newLineCount);
+    }
+
+    // Always re-tokenize the changed line and any freshly inserted lines before
+    // convergence is allowed to stop the cascade.
+    size_t forceUntil = (delta > 0) ? spliceAt + static_cast<size_t>(delta)
+                                    : firstChangedLine + 1;
+
+    // Incoming carry state for firstChangedLine (from the previous line's exit).
+    bool inML = false;
+    TokenType mlType = TokenType::Normal;
+    if (firstChangedLine > 0) {
+        const TokenizedLine& prev = m_cache[firstChangedLine - 1];
+        computeEndState(prev, prev.startsInMultiLineToken, prev.multiLineTokenType,
+                        inML, mlType);
+    }
+
+    for (size_t i = firstChangedLine; i < newLineCount; ++i) {
+        // Convergence: past the directly-edited region, if the incoming state
+        // matches what the cached line already expected, everything below is
+        // still valid - stop.
+        if (i >= forceUntil &&
+            inML == m_cache[i].startsInMultiLineToken &&
+            mlType == m_cache[i].multiLineTokenType) {
+            break;
+        }
+        m_cache[i] = tokenizeLine(getLine(i), inML, mlType);
+        computeEndState(m_cache[i], inML, mlType, inML, mlType);
+    }
+    ++m_cacheVersion;
 }
 
 void Highlighter::invalidateLine(size_t lineIndex) {

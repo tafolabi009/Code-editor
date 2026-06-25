@@ -99,8 +99,9 @@ public:
     // Syntax highlighting
     void setHighlighter(std::shared_ptr<syntax::Highlighter> highlighter);
     std::shared_ptr<syntax::Highlighter> getHighlighter() const { return m_highlighter; }
-    // Mark the cached highlighting stale so it is rebuilt on the next render.
-    void markHighlightDirty() { m_highlightDirty = true; }
+    // Force a full re-highlight on the next render (used after undo/redo or a
+    // language change, which don't go through the incremental edit path).
+    void markHighlightDirty() { m_needsFullHighlight = true; }
 
     // File association (one file per pane / tab)
     const std::string& getFilePath() const { return m_filePath; }
@@ -108,12 +109,20 @@ public:
     std::string getDisplayName() const;
 
 private:
+    // Sentinel: no line is pending incremental re-highlight.
+    static constexpr size_t kNoDirtyLine = static_cast<size_t>(-1);
+
+    // Hook the buffer's change notifications so edits mark the smallest changed
+    // line for incremental re-highlighting.
+    void hookBufferChanges();
+
     std::shared_ptr<editor::TextBuffer> m_buffer;
     std::unique_ptr<editor::Cursor> m_cursor;
     std::unique_ptr<editor::Selection> m_selection;
     std::shared_ptr<syntax::Highlighter> m_highlighter;
     std::string m_filePath;
-    bool m_highlightDirty = false;
+    bool m_needsFullHighlight = false;
+    size_t m_dirtyFromLine = kNoDirtyLine;
     
     float m_scrollX = 0.0f;
     float m_scrollY = 0.0f;
@@ -196,6 +205,7 @@ public:
     void showFindDialog();
     void showReplaceDialog();
     void showSettingsDialog();
+    void showFindInFilesDialog();
     
     // Status
     std::string getStatusText() const;
@@ -222,10 +232,25 @@ private:
     search::SearchEngine m_searchEngine;
     std::vector<search::SearchMatch> m_searchResults;
     size_t m_currentMatchIndex = 0;
-    
+
+    // Find-in-all-tabs state
+    struct GlobalSearchResult {
+        size_t paneIndex;
+        std::string file;
+        size_t line;
+        size_t column;
+        size_t offset;
+        size_t length;
+        std::string preview;
+    };
+    bool m_showFindInFilesDialog = false;
+    std::vector<GlobalSearchResult> m_globalResults;
+
     // Search helper methods
     void performSearch();
     void selectMatch(const search::SearchMatch& match);
+    void performGlobalSearch();
+    void jumpToGlobalResult(const GlobalSearchResult& result);
     
     // Initialization
     void initGLFW();
