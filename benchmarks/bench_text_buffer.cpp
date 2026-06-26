@@ -7,6 +7,7 @@
 #include "editor/text_buffer.hpp"
 #include <random>
 #include <string>
+#include <sstream>
 
 using namespace editor;
 

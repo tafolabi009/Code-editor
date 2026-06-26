@@ -145,18 +145,25 @@ Design goals: fast cold start, modest memory use, and an editing core that
 stays responsive on large files (incremental re-highlighting is O(changed
 lines), not O(file)).
 
+### Literal search
+
+The default literal search scans for the pattern's first byte with `memchr`
+(which libc implements with optimized SIMD) and verifies the rest with
+`memcmp`. On a single-needle scan over 64 MB this measured roughly **2× faster
+than the previous `std::string::find` loop**.
+
 ### A note on the SIMD search kernels
 
-The AVX2/SSE4.2 literal-search assembly is **opt-in** (`-DENABLE_ASM=ON`) and
-currently **experimental**. It is correct (covered by the test suite, including
-non-overlapping and whole-word cases) but, in current micro-benchmarks on a
-single-needle scan, it is *not yet faster* than the scalar `std::string::find`
-path — both are well under the aspirational "10 GB/s" figure from early drafts
-of this README. The default build therefore uses the scalar path. Beating a
-good scalar search (e.g. a `memchr`-driven first-byte filter) is tracked as
-future work; the numbers here will be updated with reproducible benchmarks as
-that lands. The assembly is kept in-tree, building and verified, so it can be
-optimized incrementally.
+The hand-written AVX2/SSE4.2 literal-search assembly is **opt-in**
+(`-DENABLE_ASM=ON`) and currently **experimental**. It is correct (covered by
+the test suite, including non-overlapping and whole-word cases), but in current
+micro-benchmarks it is actually **slower than the default `memchr` path** (on
+the 64 MB scan above, ~0.8 GB/s for the assembly vs ~1.5 GB/s for `memchr`) —
+and both are well under the aspirational "10 GB/s" figure from early drafts of
+this README. So the default build uses the scalar `memchr` path. The assembly
+is kept in-tree, building and verified, so it can be optimized later (the likely
+win is matching libc's approach rather than a naive first-byte AVX2 loop).
+These are single-machine microbenchmarks, not a rigorous suite.
 
 ## Key Components
 

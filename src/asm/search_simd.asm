@@ -52,20 +52,22 @@ simd_search_avx2:
     push r13
     push r14
     push r15
-    
+    sub rsp, 16             ; reserve a local slot; maxResults at [rbp-48]
+                            ; (must NOT reuse [rbp-8], which holds saved rbx)
+
     ; Save arguments
     mov r12, ARG1           ; text
     mov r13, ARG2           ; textLen
     mov r14, ARG3           ; pattern
     mov r15, ARG4           ; patternLen
-    
+
 %ifdef WIN64
     mov rbx, ARG5           ; results
     mov rax, ARG6           ; maxResults
-    mov [rbp-8], rax
+    mov [rbp-48], rax
 %else
     mov rbx, ARG5           ; results
-    mov [rbp-8], ARG6       ; maxResults
+    mov [rbp-48], ARG6      ; maxResults
 %endif
     
     xor rax, rax            ; match count = 0
@@ -138,7 +140,7 @@ simd_search_avx2:
     jne .no_match
     
     ; Found a match - store position
-    cmp rax, [rbp-8]        ; Check maxResults
+    cmp rax, [rbp-48]        ; Check maxResults
     jge .no_match
 
     mov [rbx + rax*8], r10
@@ -189,7 +191,7 @@ simd_search_avx2:
     jne .scalar_next
     
     ; Store match
-    cmp rax, [rbp-8]
+    cmp rax, [rbp-48]
     jge .scalar_next
     mov [rbx + rax*8], r8
     inc rax
@@ -202,7 +204,8 @@ simd_search_avx2:
     
 .done:
     vzeroupper              ; Clean up AVX state
-    
+
+    add rsp, 16             ; release local slot
     pop r15
     pop r14
     pop r13
@@ -228,7 +231,9 @@ simd_search_sse42:
     push r13
     push r14
     push r15
-    
+    sub rsp, 16             ; reserve a local slot; maxResults at [rbp-48]
+                            ; (must NOT reuse [rbp-8], which holds saved rbx)
+
     mov r12, ARG1           ; text
     mov r13, ARG2           ; textLen
     mov r14, ARG3           ; pattern
@@ -237,10 +242,10 @@ simd_search_sse42:
 %ifdef WIN64
     mov rbx, ARG5           ; results
     mov rax, ARG6
-    mov [rbp-8], rax        ; maxResults
+    mov [rbp-48], rax        ; maxResults
 %else
     mov rbx, ARG5           ; results
-    mov [rbp-8], ARG6       ; maxResults
+    mov [rbp-48], ARG6       ; maxResults
 %endif
     
     xor rax, rax            ; match count
@@ -288,7 +293,7 @@ simd_search_sse42:
     
     ; Verify full match if pattern > 16 bytes not needed here
     ; Store match
-    cmp rax, [rbp-8]
+    cmp rax, [rbp-48]
     jge .sse_continue
     
     mov [rbx + rax*8], r10
@@ -341,7 +346,7 @@ simd_search_sse42:
     repe cmpsb
     jne .sse_no_match
     
-    cmp rax, [rbp-8]
+    cmp rax, [rbp-48]
     jge .sse_no_match
     mov [rbx + rax*8], r10
     inc rax
@@ -384,7 +389,7 @@ simd_search_sse42:
     pop rax
     jne .sse_scalar_next
     
-    cmp rax, [rbp-8]
+    cmp rax, [rbp-48]
     jge .sse_scalar_next
     mov [rbx + rax*8], r8
     inc rax
@@ -396,6 +401,7 @@ simd_search_sse42:
     jmp .sse_scalar
     
 .sse_done:
+    add rsp, 16             ; release local slot
     pop r15
     pop r14
     pop r13
