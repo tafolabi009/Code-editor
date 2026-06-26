@@ -347,49 +347,67 @@ std::vector<SearchMatch> SearchEngine::searchPlain(std::string_view text,
     }
 #endif
     
-    // Fallback: standard string search.
+    // Scalar literal search.
     //
-    // Line/column are tracked incrementally as the scan position advances so
-    // the whole search is O(n) rather than O(n * matches) - computing them
-    // from scratch per match would be quadratic on match-dense input.
-    if (pattern.empty()) {
+    // We scan for the pattern's first byte with memchr (which libc implements
+    // with heavily-optimized SIMD), then verify the remainder with memcmp. This
+    // is substantially faster than a naive find loop while staying portable, and
+    // is the default path when the hand-written SIMD assembly is not compiled in.
+    //
+    // Line/column are tracked incrementally as the scan advances so the whole
+    // search is O(n) rather than O(n * matches).
+    if (pattern.empty() || text.size() < pattern.size()) {
         return results;
     }
 
-    size_t pos = 0;
+    const char* base = text.data();
+    const size_t patLen = pattern.size();
+    const char firstByte = pattern[0];
+    const size_t lastStart = text.size() - patLen;  // last valid match start
+
     size_t scanned = 0;       // offset up to which newlines have been counted
     size_t curLine = 0;       // line number at 'scanned'
     size_t curLineStart = 0;  // offset of the start of 'curLine'
 
-    while ((pos = text.find(pattern, pos)) != std::string_view::npos) {
+    size_t pos = 0;
+    while (pos <= lastStart) {
         if (m_cancelled.load()) break;
 
-        if (!options.wholeWord || isWordBoundary(text, pos, pattern.size())) {
-            // Advance the line/column cursor up to this match.
-            for (; scanned < pos; ++scanned) {
-                if (text[scanned] == '\n') {
-                    ++curLine;
-                    curLineStart = scanned + 1;
+        // Find the next candidate (first byte match) within the valid range.
+        const char* hit = static_cast<const char*>(
+            std::memchr(base + pos, firstByte, lastStart - pos + 1));
+        if (!hit) {
+            break;
+        }
+        size_t offset = static_cast<size_t>(hit - base);
+
+        // Verify the rest of the pattern.
+        if (patLen == 1 || std::memcmp(base + offset, pattern.data(), patLen) == 0) {
+            if (!options.wholeWord || isWordBoundary(text, offset, patLen)) {
+                for (; scanned < offset; ++scanned) {
+                    if (base[scanned] == '\n') {
+                        ++curLine;
+                        curLineStart = scanned + 1;
+                    }
                 }
+
+                SearchMatch match;
+                match.offset = offset;
+                match.length = patLen;
+                match.line = curLine;
+                match.column = offset - curLineStart;
+                results.push_back(match);
+
+                if (m_progressCallback && results.size() % 1000 == 0) {
+                    m_progressCallback(offset, text.size());
+                }
+
+                pos = offset + patLen;  // non-overlapping
+                continue;
             }
-
-            SearchMatch match;
-            match.offset = pos;
-            match.length = pattern.size();
-            match.line = curLine;
-            match.column = pos - curLineStart;
-            results.push_back(match);
-
-            // Non-overlapping: resume scanning after this match.
-            pos += pattern.size();
-        } else {
-            // Rejected candidate (whole-word miss): try the next position.
-            ++pos;
         }
 
-        if (m_progressCallback && results.size() % 1000 == 0) {
-            m_progressCallback(pos, text.size());
-        }
+        pos = offset + 1;  // not a match (or whole-word miss): keep scanning
     }
 
     return results;
