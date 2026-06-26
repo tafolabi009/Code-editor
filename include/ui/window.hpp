@@ -123,6 +123,11 @@ private:
     std::string m_filePath;
     bool m_needsFullHighlight = false;
     size_t m_dirtyFromLine = kNoDirtyLine;
+
+    // Editing options snapshotted from EditorConfig on render (used by key
+    // handlers like auto-indent that run outside render()).
+    int m_tabWidth = 4;
+    bool m_autoIndent = true;
     
     float m_scrollX = 0.0f;
     float m_scrollY = 0.0f;
@@ -193,6 +198,13 @@ public:
     void copySelection();
     void cutSelection();
     void pasteClipboard();
+
+    // Editor commands (operate on the current pane)
+    void duplicateCurrentLine();
+    void moveCurrentLineUp();
+    void moveCurrentLineDown();
+    void toggleCommentCurrent();
+    void jumpToMatchingBracket();
     
     // Editor panes
     EditorPane* getCurrentPane() { return m_currentPane; }

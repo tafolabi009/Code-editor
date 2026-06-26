@@ -7,6 +7,7 @@
 #include "ui/tabs.hpp"
 #include "ui/statusbar.hpp"
 #include "syntax/highlighter.hpp"
+#include "editor/text_ops.hpp"
 
 #include <GLFW/glfw3.h>
 #include "imgui.h"
@@ -211,6 +212,10 @@ void EditorPane::renderGutter(const EditorTheme& theme, const EditorConfig& conf
 }
 
 void EditorPane::renderText(const EditorTheme& theme, const EditorConfig& config) {
+    // Snapshot editing options for key handlers that run outside render().
+    m_tabWidth = config.tabWidth > 0 ? config.tabWidth : 4;
+    m_autoIndent = config.autoIndent;
+
     // Refresh syntax highlighting if the buffer changed since the last frame.
     if (m_highlighter) {
         auto getLine = [this](size_t i) { return m_buffer->getLine(i); };
@@ -517,16 +522,19 @@ void EditorPane::handleDelete() {
 
 void EditorPane::handleEnter() {
     deleteSelection();
-    insertChar('\n');
+    if (m_autoIndent) {
+        size_t line = m_cursor->getPosition().line;
+        std::string indent =
+            editor::ops::computeNewlineIndent(*m_buffer, line, m_tabWidth, /*useSpaces=*/true);
+        insertText("\n" + indent);
+    } else {
+        insertChar('\n');
+    }
 }
 
 void EditorPane::handleTab() {
     deleteSelection();
-    // Use configurable tab width (default 4 spaces)
-    // Future: Check m_config for "tabWidth" and "insertSpaces" settings
-    static constexpr int tabWidth = 4;
-    static const std::string tabStr(tabWidth, ' ');
-    insertText(tabStr);
+    insertText(std::string(static_cast<size_t>(m_tabWidth), ' '));
 }
 
 // ====================
@@ -728,6 +736,12 @@ void Window::renderMenuBar() {
             if (ImGui::MenuItem("Cut", "Ctrl+X")) cutSelection();
             if (ImGui::MenuItem("Copy", "Ctrl+C")) copySelection();
             if (ImGui::MenuItem("Paste", "Ctrl+V")) pasteClipboard();
+            ImGui::Separator();
+            if (ImGui::MenuItem("Duplicate Line", "Ctrl+D")) duplicateCurrentLine();
+            if (ImGui::MenuItem("Move Line Up", "Alt+Up")) moveCurrentLineUp();
+            if (ImGui::MenuItem("Move Line Down", "Alt+Down")) moveCurrentLineDown();
+            if (ImGui::MenuItem("Toggle Comment", "Ctrl+/")) toggleCommentCurrent();
+            if (ImGui::MenuItem("Go to Matching Bracket", "Ctrl+]")) jumpToMatchingBracket();
             ImGui::Separator();
             if (ImGui::MenuItem("Find...", "Ctrl+F")) showFindDialog();
             if (ImGui::MenuItem("Replace...", "Ctrl+H")) showReplaceDialog();
@@ -1293,9 +1307,18 @@ void Window::keyCallback(GLFWwindow* window, int key, int scancode, int action, 
             case GLFW_KEY_C: self->copySelection(); return;
             case GLFW_KEY_X: self->cutSelection(); return;
             case GLFW_KEY_V: self->pasteClipboard(); return;
+            case GLFW_KEY_D: self->duplicateCurrentLine(); return;
+            case GLFW_KEY_SLASH: self->toggleCommentCurrent(); return;
+            case GLFW_KEY_RIGHT_BRACKET: self->jumpToMatchingBracket(); return;
         }
     }
-    
+
+    // Alt+Up / Alt+Down move the current line.
+    if (action != GLFW_RELEASE && (mods & GLFW_MOD_ALT) && !(mods & GLFW_MOD_CONTROL)) {
+        if (key == GLFW_KEY_UP) { self->moveCurrentLineUp(); return; }
+        if (key == GLFW_KEY_DOWN) { self->moveCurrentLineDown(); return; }
+    }
+
     if (self->m_currentPane) {
         self->m_currentPane->handleKeyInput(key, scancode, action, mods);
     }
@@ -1502,6 +1525,82 @@ void Window::pasteClipboard() {
     buffer.insert(offset, text);
     cursor.setPosition(buffer.offsetToPosition(offset + text.size()));
     // The buffer's change callback marks the line for incremental re-highlight.
+}
+
+// ====================
+// Editor commands
+// ====================
+
+void Window::duplicateCurrentLine() {
+    if (!m_currentPane) return;
+    auto& buf = *m_currentPane->getBuffer();
+    auto& cursor = m_currentPane->getCursor();
+    auto pos = cursor.getPosition();
+    editor::ops::duplicateLine(buf, pos.line);
+    // The copy is inserted above, so the original (and cursor) shift down one.
+    cursor.setPosition({pos.line + 1, pos.column});
+}
+
+void Window::moveCurrentLineDown() {
+    if (!m_currentPane) return;
+    auto& buf = *m_currentPane->getBuffer();
+    auto& cursor = m_currentPane->getCursor();
+    auto pos = cursor.getPosition();
+    if (pos.line + 1 >= buf.lineCount()) return;
+    editor::ops::moveLineDown(buf, pos.line);
+    cursor.setPosition({pos.line + 1, pos.column});
+}
+
+void Window::moveCurrentLineUp() {
+    if (!m_currentPane) return;
+    auto& buf = *m_currentPane->getBuffer();
+    auto& cursor = m_currentPane->getCursor();
+    auto pos = cursor.getPosition();
+    if (pos.line == 0) return;
+    editor::ops::moveLineUp(buf, pos.line);
+    cursor.setPosition({pos.line - 1, pos.column});
+}
+
+void Window::toggleCommentCurrent() {
+    if (!m_currentPane) return;
+    auto& buf = *m_currentPane->getBuffer();
+    auto& selection = m_currentPane->getSelection();
+
+    size_t startLine, endLine;
+    if (selection.hasSelection()) {
+        auto range = selection.getNormalizedRange();
+        startLine = range.start.line;
+        endLine = range.end.line;
+    } else {
+        startLine = endLine = m_currentPane->getCursor().getPosition().line;
+    }
+
+    // Use the language's line-comment token when known, else default to "//".
+    std::string token = "//";
+    if (auto highlighter = m_currentPane->getHighlighter()) {
+        const std::string& slc = highlighter->getLanguage().singleLineComment;
+        if (!slc.empty()) {
+            token = slc;
+        }
+    }
+    editor::ops::toggleLineComment(buf, startLine, endLine, token);
+}
+
+void Window::jumpToMatchingBracket() {
+    if (!m_currentPane) return;
+    auto& buf = *m_currentPane->getBuffer();
+    auto& cursor = m_currentPane->getCursor();
+
+    size_t off = buf.positionToOffset(cursor.getPosition());
+    auto match = editor::ops::findMatchingBracket(buf, off);
+    if (!match && off > 0) {
+        // The cursor may sit just after a closing bracket.
+        match = editor::ops::findMatchingBracket(buf, off - 1);
+    }
+    if (match) {
+        cursor.setPosition(buf.offsetToPosition(*match));
+        m_currentPane->scrollToCursor();
+    }
 }
 
 } // namespace ui
