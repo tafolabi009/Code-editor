@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <cctype>
 
 #ifdef _WIN32
 #define GLFW_EXPOSE_NATIVE_WIN32
@@ -310,51 +311,84 @@ void EditorPane::renderText(const EditorTheme& theme, const EditorConfig& config
 }
 
 void EditorPane::renderCursor(const EditorTheme& theme) {
-    if (!m_cursor->isVisible()) return;
-    
     ImDrawList* drawList = ImGui::GetWindowDrawList();
-    auto screenPos = positionToScreen(m_cursor->getPosition());
-    
-    // Draw cursor line
-    drawList->AddRectFilled(
-        screenPos,
-        ImVec2(screenPos.x + 2.0f, screenPos.y + m_lineHeight),
-        ImGui::ColorConvertFloat4ToU32(theme.cursor)
-    );
+    auto drawCaret = [&](const editor::Position& p) {
+        auto screenPos = positionToScreen(p);
+        drawList->AddRectFilled(
+            screenPos,
+            ImVec2(screenPos.x + 2.0f, screenPos.y + m_lineHeight),
+            ImGui::ColorConvertFloat4ToU32(theme.cursor));
+    };
+
+    if (m_multiCursor.hasMultiple()) {
+        for (const auto& c : m_multiCursor.carets()) {
+            drawCaret(m_buffer->offsetToPosition(c.pos));
+        }
+        return;
+    }
+
+    if (!m_cursor->isVisible()) return;
+    drawCaret(m_cursor->getPosition());
 }
 
 void EditorPane::renderSelection(const EditorTheme& theme) {
-    if (!m_selection->hasSelection()) return;
-    
     ImDrawList* drawList = ImGui::GetWindowDrawList();
-    auto range = m_selection->getNormalizedRange();
-    
     size_t firstLine = getFirstVisibleLine();
     size_t lastLine = getLastVisibleLine();
-    
-    for (size_t line = range.start.line; line <= range.end.line; ++line) {
-        if (line < firstLine || line >= lastLine) continue;
-        
-        size_t startCol = (line == range.start.line) ? range.start.column : 0;
-        size_t endCol = (line == range.end.line) ? range.end.column : m_buffer->lineLength(line);
-        
-        auto startPos = positionToScreen({line, startCol});
-        auto endPos = positionToScreen({line, endCol});
-        
-        drawList->AddRectFilled(
-            startPos,
-            ImVec2(endPos.x, startPos.y + m_lineHeight),
-            ImGui::ColorConvertFloat4ToU32(theme.selection)
-        );
+
+    auto drawRange = [&](const editor::Range& range) {
+        for (size_t line = range.start.line; line <= range.end.line; ++line) {
+            if (line < firstLine || line >= lastLine) continue;
+
+            size_t startCol = (line == range.start.line) ? range.start.column : 0;
+            size_t endCol = (line == range.end.line) ? range.end.column
+                                                      : m_buffer->lineLength(line);
+
+            auto startPos = positionToScreen({line, startCol});
+            auto endPos = positionToScreen({line, endCol});
+
+            drawList->AddRectFilled(
+                startPos,
+                ImVec2(endPos.x, startPos.y + m_lineHeight),
+                ImGui::ColorConvertFloat4ToU32(theme.selection));
+        }
+    };
+
+    if (m_multiCursor.hasMultiple()) {
+        for (const auto& c : m_multiCursor.carets()) {
+            if (c.hasSelection()) {
+                drawRange({m_buffer->offsetToPosition(c.selStart()),
+                           m_buffer->offsetToPosition(c.selEnd())});
+            }
+        }
+        return;
+    }
+
+    if (m_selection->hasSelection()) {
+        drawRange(m_selection->getNormalizedRange());
     }
 }
 
 void EditorPane::handleKeyInput(int key, [[maybe_unused]] int scancode, int action, int mods) {
     if (action == GLFW_RELEASE) return;
-    
+
     bool ctrl = (mods & GLFW_MOD_CONTROL) != 0;
     bool shift = (mods & GLFW_MOD_SHIFT) != 0;
-    
+
+    // Plain caret movement collapses any multi-cursor back to a single caret.
+    if (m_multiCursor.hasMultiple()) {
+        switch (key) {
+            case GLFW_KEY_LEFT: case GLFW_KEY_RIGHT:
+            case GLFW_KEY_UP: case GLFW_KEY_DOWN:
+            case GLFW_KEY_HOME: case GLFW_KEY_END:
+            case GLFW_KEY_PAGE_UP: case GLFW_KEY_PAGE_DOWN:
+                clearSecondaryCursors();
+                break;
+            default:
+                break;
+        }
+    }
+
     // Navigation
     if (key == GLFW_KEY_LEFT) {
         if (shift) m_selection->extendSelectionLeft();
@@ -405,9 +439,7 @@ void EditorPane::handleKeyInput(int key, [[maybe_unused]] int scancode, int acti
 
 void EditorPane::handleCharInput(unsigned int codepoint) {
     if (codepoint < 32) return;  // Control characters
-    
-    deleteSelection();
-    
+
     // Properly encode UTF-8 codepoint
     std::string utf8Char;
     if (codepoint < 0x80) {
@@ -425,7 +457,15 @@ void EditorPane::handleCharInput(unsigned int codepoint) {
         utf8Char += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
         utf8Char += static_cast<char>(0x80 | (codepoint & 0x3F));
     }
-    
+
+    if (m_multiCursor.hasMultiple()) {
+        m_multiCursor.insertText(*m_buffer, utf8Char);
+        syncPrimaryFromMulti();
+        scrollToCursor();
+        return;
+    }
+
+    deleteSelection();
     insertText(utf8Char);
     scrollToCursor();
 }
@@ -436,11 +476,21 @@ void EditorPane::handleMouseButton(int button, int action, int mods, double x, d
         auto pos = screenToPosition(localPos.x, localPos.y);
         
         if (action == GLFW_PRESS) {
-            if (mods & GLFW_MOD_SHIFT) {
+            if (mods & GLFW_MOD_ALT) {
+                // Alt+Click adds a caret at the clicked position.
+                if (!m_multiCursor.hasMultiple()) {
+                    size_t cur = m_buffer->positionToOffset(m_cursor->getPosition());
+                    m_multiCursor.setPrimary(cur);
+                }
+                m_multiCursor.addCaret(m_buffer->positionToOffset(pos));
+                m_cursor->setPosition(pos);
+            } else if (mods & GLFW_MOD_SHIFT) {
                 // Extend selection
+                clearSecondaryCursors();
                 m_selection->extendSelection(pos);
             } else {
                 // Start new selection
+                clearSecondaryCursors();
                 m_cursor->setPosition(pos);
                 m_selection->clearSelection();
                 m_selection->startDragSelection(pos);
@@ -497,6 +547,11 @@ void EditorPane::deleteSelection() {
 }
 
 void EditorPane::handleBackspace() {
+    if (m_multiCursor.hasMultiple()) {
+        m_multiCursor.backspace(*m_buffer);
+        syncPrimaryFromMulti();
+        return;
+    }
     if (m_selection->hasSelection()) {
         deleteSelection();
     } else {
@@ -510,6 +565,11 @@ void EditorPane::handleBackspace() {
 }
 
 void EditorPane::handleDelete() {
+    if (m_multiCursor.hasMultiple()) {
+        m_multiCursor.deleteForward(*m_buffer);
+        syncPrimaryFromMulti();
+        return;
+    }
     if (m_selection->hasSelection()) {
         deleteSelection();
     } else {
@@ -521,6 +581,12 @@ void EditorPane::handleDelete() {
 }
 
 void EditorPane::handleEnter() {
+    if (m_multiCursor.hasMultiple()) {
+        m_multiCursor.insertText(*m_buffer, "\n");
+        syncPrimaryFromMulti();
+        scrollToCursor();
+        return;
+    }
     deleteSelection();
     if (m_autoIndent) {
         size_t line = m_cursor->getPosition().line;
@@ -533,8 +599,99 @@ void EditorPane::handleEnter() {
 }
 
 void EditorPane::handleTab() {
+    std::string tab(static_cast<size_t>(m_tabWidth), ' ');
+    if (m_multiCursor.hasMultiple()) {
+        m_multiCursor.insertText(*m_buffer, tab);
+        syncPrimaryFromMulti();
+        scrollToCursor();
+        return;
+    }
     deleteSelection();
-    insertText(std::string(static_cast<size_t>(m_tabWidth), ' '));
+    insertText(tab);
+}
+
+// ====================
+// Multi-cursor
+// ====================
+
+void EditorPane::syncPrimaryFromMulti() {
+    const editor::Caret& p = m_multiCursor.primary();
+    m_cursor->setPosition(m_buffer->offsetToPosition(p.pos));
+    if (p.hasSelection()) {
+        m_selection->startSelection(m_buffer->offsetToPosition(p.anchor),
+                                    editor::SelectionMode::Normal);
+        m_selection->extendSelection(m_buffer->offsetToPosition(p.pos));
+    } else {
+        m_selection->clearSelection();
+    }
+}
+
+editor::Range EditorPane::wordRangeAt(const editor::Position& pos) const {
+    std::string text = m_buffer->getText();
+    size_t off = m_buffer->positionToOffset(pos);
+    auto isWord = [](char c) {
+        return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+    };
+    size_t start = off;
+    size_t end = off;
+    while (start > 0 && isWord(text[start - 1])) --start;
+    while (end < text.size() && isWord(text[end])) ++end;
+    return {m_buffer->offsetToPosition(start), m_buffer->offsetToPosition(end)};
+}
+
+void EditorPane::addNextOccurrence() {
+    std::string text = m_buffer->getText();
+    if (text.empty()) return;
+
+    // First press: seed from the current selection, or select the word under
+    // the cursor.
+    if (!m_multiCursor.hasMultiple()) {
+        size_t s, e;
+        if (m_selection->hasSelection()) {
+            auto r = m_selection->getNormalizedRange();
+            s = m_buffer->positionToOffset(r.start);
+            e = m_buffer->positionToOffset(r.end);
+        } else {
+            auto r = wordRangeAt(m_cursor->getPosition());
+            s = m_buffer->positionToOffset(r.start);
+            e = m_buffer->positionToOffset(r.end);
+        }
+        if (e <= s) return;
+        m_multiCursor.setPrimary(e, s);
+        syncPrimaryFromMulti();
+        scrollToCursor();
+        return;
+    }
+
+    // Subsequent presses: add the next occurrence of the seed text.
+    size_t termStart = m_multiCursor.carets().front().selStart();
+    size_t termEnd = m_multiCursor.carets().front().selEnd();
+    if (termEnd <= termStart) return;
+    std::string term = text.substr(termStart, termEnd - termStart);
+
+    size_t maxEnd = 0;
+    for (const auto& c : m_multiCursor.carets()) {
+        maxEnd = std::max(maxEnd, c.selEnd());
+    }
+    size_t found = text.find(term, maxEnd);
+    if (found == std::string::npos) {
+        found = text.find(term, 0);  // wrap around
+    }
+    if (found == std::string::npos) return;
+
+    for (const auto& c : m_multiCursor.carets()) {
+        if (c.selStart() == found) return;  // already have this one
+    }
+
+    m_multiCursor.addCaret(found + term.size(), found);
+    m_cursor->setPosition(m_buffer->offsetToPosition(found + term.size()));
+    scrollToCursor();
+}
+
+void EditorPane::clearSecondaryCursors() {
+    if (!m_multiCursor.hasMultiple()) return;
+    size_t off = m_buffer->positionToOffset(m_cursor->getPosition());
+    m_multiCursor.setPrimary(off);
 }
 
 // ====================
@@ -737,7 +894,10 @@ void Window::renderMenuBar() {
             if (ImGui::MenuItem("Copy", "Ctrl+C")) copySelection();
             if (ImGui::MenuItem("Paste", "Ctrl+V")) pasteClipboard();
             ImGui::Separator();
-            if (ImGui::MenuItem("Duplicate Line", "Ctrl+D")) duplicateCurrentLine();
+            if (ImGui::MenuItem("Add Next Occurrence", "Ctrl+D")) {
+                if (m_currentPane) m_currentPane->addNextOccurrence();
+            }
+            if (ImGui::MenuItem("Duplicate Line", "Ctrl+Shift+D")) duplicateCurrentLine();
             if (ImGui::MenuItem("Move Line Up", "Alt+Up")) moveCurrentLineUp();
             if (ImGui::MenuItem("Move Line Down", "Alt+Down")) moveCurrentLineDown();
             if (ImGui::MenuItem("Toggle Comment", "Ctrl+/")) toggleCommentCurrent();
@@ -1307,10 +1467,20 @@ void Window::keyCallback(GLFWwindow* window, int key, int scancode, int action, 
             case GLFW_KEY_C: self->copySelection(); return;
             case GLFW_KEY_X: self->cutSelection(); return;
             case GLFW_KEY_V: self->pasteClipboard(); return;
-            case GLFW_KEY_D: self->duplicateCurrentLine(); return;
+            case GLFW_KEY_D:
+                if (mods & GLFW_MOD_SHIFT) self->duplicateCurrentLine();
+                else if (self->m_currentPane) self->m_currentPane->addNextOccurrence();
+                return;
             case GLFW_KEY_SLASH: self->toggleCommentCurrent(); return;
             case GLFW_KEY_RIGHT_BRACKET: self->jumpToMatchingBracket(); return;
         }
+    }
+
+    // Escape collapses a multi-cursor back to a single caret.
+    if (action == GLFW_PRESS && key == GLFW_KEY_ESCAPE && self->m_currentPane &&
+        self->m_currentPane->hasMultipleCursors()) {
+        self->m_currentPane->clearSecondaryCursors();
+        return;
     }
 
     // Alt+Up / Alt+Down move the current line.

@@ -5,6 +5,7 @@
 #include "../editor/cursor.hpp"
 #include "../editor/selection.hpp"
 #include "../editor/clipboard.hpp"
+#include "../editor/multi_cursor.hpp"
 #include "../syntax/highlighter.hpp"
 #include "../search/search.hpp"
 #include <memory>
@@ -83,6 +84,11 @@ public:
     // Cursor & Selection
     editor::Cursor& getCursor() { return *m_cursor; }
     editor::Selection& getSelection() { return *m_selection; }
+
+    // Multi-cursor
+    void addNextOccurrence();     // Ctrl+D: select word, then add next match
+    void clearSecondaryCursors(); // Esc: collapse back to a single caret
+    bool hasMultipleCursors() const { return m_multiCursor.hasMultiple(); }
     
     // Scroll position
     float getScrollX() const { return m_scrollX; }
@@ -119,6 +125,7 @@ private:
     std::shared_ptr<editor::TextBuffer> m_buffer;
     std::unique_ptr<editor::Cursor> m_cursor;
     std::unique_ptr<editor::Selection> m_selection;
+    editor::MultiCursor m_multiCursor;  // active when it holds >1 caret
     std::shared_ptr<syntax::Highlighter> m_highlighter;
     std::string m_filePath;
     bool m_needsFullHighlight = false;
@@ -158,6 +165,10 @@ private:
     void handleDelete();
     void handleEnter();
     void handleTab();
+
+    // Multi-cursor helpers
+    void syncPrimaryFromMulti();
+    editor::Range wordRangeAt(const editor::Position& pos) const;
 };
 
 /**
